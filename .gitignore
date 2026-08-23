@@ -1,0 +1,19 @@
+# Secrets — never commit
+.env
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+venv/
+.venv/
+*.egg-info/
+
+# Database (Day 1 uses a local SQLite file — don't ship real captured data)
+data/*.db
+data/*.db-journal
+
+# OS / editor noise
+.DS_Store
+.vscode/
+.idea/
