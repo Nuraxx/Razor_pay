@@ -1,0 +1,314 @@
+event_id,subscription_id,recovered_within_14d,recovered_at,recovered_via,final_amount_recovered
+evt_SYN000000,sub_SYN00000,True,2026-01-17 19:54:00,auto_retry,754.0
+evt_SYN000001,sub_SYN00000,True,2026-02-03 07:12:00,customer_self_serve,754.0
+evt_SYN000002,sub_SYN00000,False,,none,0.0
+evt_SYN000003,sub_SYN00000,False,,none,0.0
+evt_SYN000004,sub_SYN00001,True,2025-12-11 23:09:00,auto_retry,4304.0
+evt_SYN000005,sub_SYN00002,False,,none,0.0
+evt_SYN000006,sub_SYN00002,False,,none,0.0
+evt_SYN000007,sub_SYN00002,True,2026-08-16 20:03:00,auto_retry,323.0
+evt_SYN000008,sub_SYN00003,True,2025-07-13 04:43:00,auto_retry,96.0
+evt_SYN000009,sub_SYN00003,True,2025-08-23 07:21:00,auto_retry,96.0
+evt_SYN000010,sub_SYN00004,False,,none,0.0
+evt_SYN000011,sub_SYN00005,False,,none,0.0
+evt_SYN000012,sub_SYN00006,False,,none,0.0
+evt_SYN000013,sub_SYN00006,True,2026-04-06 14:25:00,customer_self_serve,160.0
+evt_SYN000014,sub_SYN00007,False,,none,0.0
+evt_SYN000015,sub_SYN00007,False,,none,0.0
+evt_SYN000016,sub_SYN00008,True,2025-09-16 13:06:00,customer_self_serve,175.0
+evt_SYN000017,sub_SYN00009,False,,none,0.0
+evt_SYN000018,sub_SYN00010,True,2026-06-12 00:53:00,auto_retry,352.0
+evt_SYN000019,sub_SYN00011,False,,none,0.0
+evt_SYN000020,sub_SYN00012,True,2026-06-01 11:24:00,auto_retry,145.0
+evt_SYN000021,sub_SYN00012,True,2026-07-09 09:15:00,customer_self_serve,145.0
+evt_SYN000022,sub_SYN00013,True,2026-06-13 15:22:00,auto_retry,760.36
+evt_SYN000023,sub_SYN00013,False,,none,0.0
+evt_SYN000024,sub_SYN00013,False,,none,0.0
+evt_SYN000025,sub_SYN00013,False,,none,0.0
+evt_SYN000026,sub_SYN00014,True,2026-04-14 07:24:00,auto_retry,785.0
+evt_SYN000027,sub_SYN00015,True,2025-05-11 10:23:00,auto_retry,850.0
+evt_SYN000028,sub_SYN00016,True,2026-03-21 06:06:00,auto_retry,78.87
+evt_SYN000029,sub_SYN00016,True,2026-04-25 07:37:00,auto_retry,90.0
+evt_SYN000030,sub_SYN00016,False,,none,0.0
+evt_SYN000031,sub_SYN00017,True,2025-11-25 02:10:00,auto_retry,129.0
+evt_SYN000032,sub_SYN00018,True,2025-12-03 09:21:00,auto_retry,1661.0
+evt_SYN000033,sub_SYN00018,True,2025-12-16 23:03:00,auto_retry,1661.0
+evt_SYN000034,sub_SYN00018,True,2026-01-24 01:38:00,auto_retry,1661.0
+evt_SYN000035,sub_SYN00019,True,2026-05-01 06:48:00,customer_self_serve,335.0
+evt_SYN000036,sub_SYN00019,True,2026-06-04 09:38:00,auto_retry,335.0
+evt_SYN000037,sub_SYN00020,False,,none,0.0
+evt_SYN000038,sub_SYN00020,True,2026-06-19 01:12:00,auto_retry,150.46
+evt_SYN000039,sub_SYN00020,False,,none,0.0
+evt_SYN000040,sub_SYN00021,True,2025-06-20 22:53:00,auto_retry,388.0
+evt_SYN000041,sub_SYN00022,False,,none,0.0
+evt_SYN000042,sub_SYN00023,False,,none,0.0
+evt_SYN000043,sub_SYN00023,False,,none,0.0
+evt_SYN000044,sub_SYN00023,False,,none,0.0
+evt_SYN000045,sub_SYN00024,False,,none,0.0
+evt_SYN000046,sub_SYN00024,True,2025-05-17 14:39:00,customer_self_serve,197.0
+evt_SYN000047,sub_SYN00024,False,,none,0.0
+evt_SYN000048,sub_SYN00025,True,2026-06-01 17:54:00,customer_self_serve,1759.0
+evt_SYN000049,sub_SYN00026,True,2026-02-10 02:48:00,auto_retry,82.76
+evt_SYN000050,sub_SYN00026,True,2026-05-16 22:57:00,auto_retry,85.0
+evt_SYN000051,sub_SYN00027,True,2026-05-22 11:15:00,auto_retry,330.0
+evt_SYN000052,sub_SYN00028,True,2026-02-18 18:13:00,auto_retry,469.0
+evt_SYN000053,sub_SYN00029,True,2026-05-23 21:36:00,auto_retry,180.0
+evt_SYN000054,sub_SYN00029,True,2026-06-20 00:33:00,auto_retry,180.0
+evt_SYN000055,sub_SYN00029,True,2026-07-24 14:52:00,customer_self_serve,180.0
+evt_SYN000056,sub_SYN00030,True,2025-07-11 09:43:00,auto_retry,153.0
+evt_SYN000057,sub_SYN00030,True,2025-08-04 03:51:00,customer_self_serve,153.0
+evt_SYN000058,sub_SYN00030,True,2025-08-31 08:17:00,auto_retry,153.0
+evt_SYN000059,sub_SYN00031,True,2025-12-16 11:20:00,customer_self_serve,336.0
+evt_SYN000060,sub_SYN00032,False,,none,0.0
+evt_SYN000061,sub_SYN00033,True,2025-06-26 03:19:00,customer_self_serve,415.69
+evt_SYN000062,sub_SYN00034,False,,none,0.0
+evt_SYN000063,sub_SYN00035,True,2026-01-02 04:45:00,auto_retry,916.0
+evt_SYN000064,sub_SYN00035,True,2026-03-29 20:26:00,auto_retry,916.0
+evt_SYN000065,sub_SYN00036,True,2025-06-16 20:13:00,auto_retry,326.28
+evt_SYN000066,sub_SYN00037,True,2024-09-12 16:12:00,auto_retry,900.0
+evt_SYN000067,sub_SYN00038,True,2025-11-24 04:42:00,auto_retry,97.0
+evt_SYN000068,sub_SYN00039,False,,none,0.0
+evt_SYN000069,sub_SYN00040,False,,none,0.0
+evt_SYN000070,sub_SYN00041,False,,none,0.0
+evt_SYN000071,sub_SYN00041,False,,none,0.0
+evt_SYN000072,sub_SYN00041,True,2025-09-28 11:08:00,auto_retry,661.0
+evt_SYN000073,sub_SYN00042,False,,none,0.0
+evt_SYN000074,sub_SYN00042,True,2026-07-15 18:37:00,auto_retry,122.0
+evt_SYN000075,sub_SYN00043,True,2026-01-03 17:25:00,auto_retry,385.0
+evt_SYN000076,sub_SYN00044,False,,none,0.0
+evt_SYN000077,sub_SYN00044,True,2026-05-27 01:24:00,customer_self_serve,487.0
+evt_SYN000078,sub_SYN00044,False,,none,0.0
+evt_SYN000079,sub_SYN00045,False,,none,0.0
+evt_SYN000080,sub_SYN00045,False,,none,0.0
+evt_SYN000081,sub_SYN00046,True,2025-12-28 20:08:00,customer_self_serve,431.0
+evt_SYN000082,sub_SYN00047,False,,none,0.0
+evt_SYN000083,sub_SYN00048,False,,none,0.0
+evt_SYN000084,sub_SYN00048,True,2026-07-15 04:56:00,auto_retry,393.0
+evt_SYN000085,sub_SYN00049,True,2025-09-26 14:31:00,customer_self_serve,371.0
+evt_SYN000086,sub_SYN00050,True,2026-02-22 23:02:00,customer_self_serve,352.0
+evt_SYN000087,sub_SYN00051,True,2026-04-14 01:26:00,auto_retry,888.0
+evt_SYN000088,sub_SYN00052,False,,none,0.0
+evt_SYN000089,sub_SYN00052,False,,none,0.0
+evt_SYN000090,sub_SYN00052,False,,none,0.0
+evt_SYN000091,sub_SYN00053,True,2025-08-07 01:22:00,auto_retry,198.0
+evt_SYN000092,sub_SYN00054,False,,none,0.0
+evt_SYN000093,sub_SYN00055,True,2025-11-07 10:51:00,auto_retry,769.0
+evt_SYN000094,sub_SYN00055,True,2025-11-19 07:52:00,auto_retry,769.0
+evt_SYN000095,sub_SYN00055,False,,none,0.0
+evt_SYN000096,sub_SYN00056,True,2025-06-19 18:43:00,auto_retry,957.0
+evt_SYN000097,sub_SYN00056,True,2025-10-27 09:21:00,customer_self_serve,957.0
+evt_SYN000098,sub_SYN00057,True,2026-04-04 08:48:00,auto_retry,156.0
+evt_SYN000099,sub_SYN00057,False,,none,0.0
+evt_SYN000100,sub_SYN00058,True,2025-11-25 08:05:00,auto_retry,157.0
+evt_SYN000101,sub_SYN00059,True,2025-09-24 13:15:00,auto_retry,382.0
+evt_SYN000102,sub_SYN00060,True,2025-03-31 02:34:00,auto_retry,89.0
+evt_SYN000103,sub_SYN00060,True,2025-05-01 22:34:00,auto_retry,89.0
+evt_SYN000104,sub_SYN00061,True,2025-02-14 01:35:00,auto_retry,878.0
+evt_SYN000105,sub_SYN00062,True,2026-04-27 03:11:00,customer_self_serve,143.0
+evt_SYN000106,sub_SYN00062,True,2026-05-23 18:36:00,auto_retry,143.0
+evt_SYN000107,sub_SYN00063,False,,none,0.0
+evt_SYN000108,sub_SYN00063,False,,none,0.0
+evt_SYN000109,sub_SYN00063,False,,none,0.0
+evt_SYN000110,sub_SYN00064,True,2026-04-13 17:13:00,auto_retry,2588.87
+evt_SYN000111,sub_SYN00065,True,2025-06-09 11:08:00,auto_retry,173.0
+evt_SYN000112,sub_SYN00065,True,2025-07-15 17:02:00,auto_retry,173.0
+evt_SYN000113,sub_SYN00066,False,,none,0.0
+evt_SYN000114,sub_SYN00066,True,2025-01-11 18:34:00,auto_retry,163.0
+evt_SYN000115,sub_SYN00067,True,2026-03-22 13:53:00,auto_retry,183.0
+evt_SYN000116,sub_SYN00068,True,2026-05-28 08:43:00,auto_retry,139.0
+evt_SYN000117,sub_SYN00069,True,2026-06-02 03:51:00,auto_retry,79.0
+evt_SYN000118,sub_SYN00070,True,2025-08-27 03:44:00,auto_retry,131.0
+evt_SYN000119,sub_SYN00070,False,,none,0.0
+evt_SYN000120,sub_SYN00071,True,2026-06-09 09:41:00,auto_retry,134.0
+evt_SYN000121,sub_SYN00072,False,,none,0.0
+evt_SYN000122,sub_SYN00072,True,2025-02-20 21:55:00,auto_retry,104.0
+evt_SYN000123,sub_SYN00072,False,,none,0.0
+evt_SYN000124,sub_SYN00073,True,2026-01-08 00:35:00,customer_self_serve,497.0
+evt_SYN000125,sub_SYN00074,True,2026-05-27 16:00:00,auto_retry,460.0
+evt_SYN000126,sub_SYN00075,True,2025-08-05 17:17:00,auto_retry,486.0
+evt_SYN000127,sub_SYN00076,True,2026-01-08 09:28:00,auto_retry,155.0
+evt_SYN000128,sub_SYN00077,True,2026-05-15 00:08:00,customer_self_serve,424.0
+evt_SYN000129,sub_SYN00078,False,,none,0.0
+evt_SYN000130,sub_SYN00078,True,2025-11-18 22:59:00,customer_self_serve,771.0
+evt_SYN000131,sub_SYN00079,True,2026-01-28 11:13:00,customer_self_serve,849.0
+evt_SYN000132,sub_SYN00079,False,,none,0.0
+evt_SYN000133,sub_SYN00079,False,,none,0.0
+evt_SYN000134,sub_SYN00080,True,2025-11-28 12:25:00,auto_retry,125.0
+evt_SYN000135,sub_SYN00081,True,2025-08-05 09:16:00,auto_retry,80.0
+evt_SYN000136,sub_SYN00082,True,2025-02-13 12:58:00,auto_retry,148.0
+evt_SYN000137,sub_SYN00082,True,2025-03-05 14:09:00,customer_self_serve,148.0
+evt_SYN000138,sub_SYN00082,False,,none,0.0
+evt_SYN000139,sub_SYN00083,True,2025-09-09 03:42:00,auto_retry,140.0
+evt_SYN000140,sub_SYN00084,False,,none,0.0
+evt_SYN000141,sub_SYN00085,True,2026-02-12 13:35:00,auto_retry,366.0
+evt_SYN000142,sub_SYN00086,True,2026-06-03 19:21:00,customer_self_serve,122.0
+evt_SYN000143,sub_SYN00087,True,2026-05-13 07:31:00,auto_retry,453.0
+evt_SYN000144,sub_SYN00088,True,2026-04-01 20:57:00,auto_retry,365.0
+evt_SYN000145,sub_SYN00089,True,2025-03-28 07:43:00,auto_retry,116.0
+evt_SYN000146,sub_SYN00090,True,2026-04-04 14:14:00,auto_retry,665.0
+evt_SYN000147,sub_SYN00091,True,2026-04-29 11:28:00,auto_retry,81.0
+evt_SYN000148,sub_SYN00092,True,2026-03-22 08:34:00,auto_retry,3909.0
+evt_SYN000149,sub_SYN00093,True,2026-05-11 20:04:00,auto_retry,102.0
+evt_SYN000150,sub_SYN00094,True,2025-03-05 15:05:00,auto_retry,814.0
+evt_SYN000151,sub_SYN00095,True,2025-06-19 09:34:00,auto_retry,3337.0
+evt_SYN000152,sub_SYN00095,False,,none,0.0
+evt_SYN000153,sub_SYN00096,True,2026-02-04 02:34:00,customer_self_serve,2052.25
+evt_SYN000154,sub_SYN00097,True,2026-02-14 23:28:00,auto_retry,816.0
+evt_SYN000155,sub_SYN00098,True,2026-04-07 20:57:00,auto_retry,991.0
+evt_SYN000156,sub_SYN00099,False,,none,0.0
+evt_SYN000157,sub_SYN00100,False,,none,0.0
+evt_SYN000158,sub_SYN00101,False,,none,0.0
+evt_SYN000159,sub_SYN00102,True,2026-05-25 22:06:00,auto_retry,324.0
+evt_SYN000160,sub_SYN00103,False,,none,0.0
+evt_SYN000161,sub_SYN00104,False,,none,0.0
+evt_SYN000162,sub_SYN00104,True,2025-10-26 20:18:00,auto_retry,680.0
+evt_SYN000163,sub_SYN00104,True,2025-11-22 19:21:00,customer_self_serve,680.0
+evt_SYN000164,sub_SYN00105,False,,none,0.0
+evt_SYN000165,sub_SYN00105,False,,none,0.0
+evt_SYN000166,sub_SYN00105,False,,none,0.0
+evt_SYN000167,sub_SYN00106,True,2026-06-06 08:32:00,auto_retry,434.0
+evt_SYN000168,sub_SYN00107,True,2026-04-22 02:45:00,auto_retry,476.0
+evt_SYN000169,sub_SYN00108,True,2026-03-11 01:03:00,auto_retry,107.0
+evt_SYN000170,sub_SYN00109,False,,none,0.0
+evt_SYN000171,sub_SYN00110,True,2024-12-24 08:10:00,auto_retry,361.0
+evt_SYN000172,sub_SYN00111,True,2026-06-12 15:52:00,auto_retry,359.0
+evt_SYN000173,sub_SYN00112,True,2026-06-13 02:48:00,auto_retry,172.0
+evt_SYN000174,sub_SYN00113,False,,none,0.0
+evt_SYN000175,sub_SYN00113,True,2026-01-10 04:23:00,auto_retry,320.0
+evt_SYN000176,sub_SYN00114,True,2026-03-10 10:01:00,customer_self_serve,422.0
+evt_SYN000177,sub_SYN00115,False,,none,0.0
+evt_SYN000178,sub_SYN00115,True,2025-03-22 19:03:00,customer_self_serve,121.0
+evt_SYN000179,sub_SYN00116,True,2026-05-01 03:10:00,customer_self_serve,417.0
+evt_SYN000180,sub_SYN00116,True,2026-06-03 11:24:00,customer_self_serve,417.0
+evt_SYN000181,sub_SYN00116,True,2026-07-13 11:48:00,customer_self_serve,417.0
+evt_SYN000182,sub_SYN00116,True,2026-07-23 12:04:00,auto_retry,417.0
+evt_SYN000183,sub_SYN00117,True,2026-05-07 08:19:00,customer_self_serve,381.0
+evt_SYN000184,sub_SYN00117,True,2026-06-13 10:17:00,auto_retry,381.0
+evt_SYN000185,sub_SYN00117,True,2026-06-30 22:54:00,auto_retry,381.0
+evt_SYN000186,sub_SYN00118,True,2026-06-05 00:06:00,auto_retry,192.0
+evt_SYN000187,sub_SYN00119,True,2026-05-10 21:44:00,auto_retry,1889.0
+evt_SYN000188,sub_SYN00120,True,2026-05-31 19:49:00,auto_retry,2701.0
+evt_SYN000189,sub_SYN00120,False,,none,0.0
+evt_SYN000190,sub_SYN00121,True,2025-02-26 14:32:00,auto_retry,463.0
+evt_SYN000191,sub_SYN00121,True,2025-04-03 02:26:00,auto_retry,463.0
+evt_SYN000192,sub_SYN00121,True,2025-05-05 05:36:00,auto_retry,463.0
+evt_SYN000193,sub_SYN00122,True,2026-04-16 20:25:00,auto_retry,168.0
+evt_SYN000194,sub_SYN00123,True,2026-06-22 06:52:00,auto_retry,379.0
+evt_SYN000195,sub_SYN00124,True,2026-05-11 01:14:00,auto_retry,831.0
+evt_SYN000196,sub_SYN00125,True,2026-05-14 10:24:00,customer_self_serve,308.86
+evt_SYN000197,sub_SYN00126,True,2026-04-27 05:28:00,auto_retry,808.0
+evt_SYN000198,sub_SYN00127,True,2025-12-06 13:48:00,auto_retry,320.0
+evt_SYN000199,sub_SYN00128,True,2026-04-23 01:15:00,auto_retry,374.0
+evt_SYN000200,sub_SYN00129,True,2026-06-16 20:34:00,auto_retry,142.0
+evt_SYN000201,sub_SYN00129,True,2026-07-28 10:01:00,auto_retry,142.0
+evt_SYN000202,sub_SYN00130,True,2025-12-15 12:48:00,auto_retry,908.0
+evt_SYN000203,sub_SYN00131,False,,none,0.0
+evt_SYN000204,sub_SYN00132,True,2026-04-20 16:18:00,customer_self_serve,466.0
+evt_SYN000205,sub_SYN00132,True,2026-05-26 02:14:00,auto_retry,466.0
+evt_SYN000206,sub_SYN00132,True,2026-06-21 07:13:00,auto_retry,466.0
+evt_SYN000207,sub_SYN00133,True,2025-08-22 19:43:00,auto_retry,687.0
+evt_SYN000208,sub_SYN00134,True,2025-07-07 23:09:00,auto_retry,82.0
+evt_SYN000209,sub_SYN00134,False,,none,0.0
+evt_SYN000210,sub_SYN00135,True,2026-05-27 04:00:00,auto_retry,307.0
+evt_SYN000211,sub_SYN00136,False,,none,0.0
+evt_SYN000212,sub_SYN00137,True,2026-06-13 04:27:00,auto_retry,792.0
+evt_SYN000213,sub_SYN00138,True,2026-04-07 14:56:00,customer_self_serve,107.0
+evt_SYN000214,sub_SYN00138,True,2026-04-28 17:25:00,auto_retry,107.0
+evt_SYN000215,sub_SYN00138,False,,none,0.0
+evt_SYN000216,sub_SYN00139,True,2026-05-10 07:20:00,customer_self_serve,3907.0
+evt_SYN000217,sub_SYN00140,True,2026-06-08 22:59:00,customer_self_serve,125.0
+evt_SYN000218,sub_SYN00141,True,2026-04-29 21:31:00,auto_retry,1711.0
+evt_SYN000219,sub_SYN00142,False,,none,0.0
+evt_SYN000220,sub_SYN00143,False,,none,0.0
+evt_SYN000221,sub_SYN00144,True,2026-01-17 11:34:00,auto_retry,670.0
+evt_SYN000222,sub_SYN00145,True,2026-04-28 11:25:00,auto_retry,714.0
+evt_SYN000223,sub_SYN00146,True,2025-12-26 08:10:00,customer_self_serve,4516.0
+evt_SYN000224,sub_SYN00147,True,2024-11-07 15:50:00,auto_retry,95.0
+evt_SYN000225,sub_SYN00147,True,2024-12-04 14:00:00,auto_retry,95.0
+evt_SYN000226,sub_SYN00148,True,2025-12-25 11:43:00,auto_retry,414.0
+evt_SYN000227,sub_SYN00149,True,2026-02-18 20:49:00,auto_retry,169.0
+evt_SYN000228,sub_SYN00150,True,2025-08-28 06:40:00,customer_self_serve,406.0
+evt_SYN000229,sub_SYN00150,False,,none,0.0
+evt_SYN000230,sub_SYN00150,True,2025-10-21 00:41:00,auto_retry,406.0
+evt_SYN000231,sub_SYN00151,False,,none,0.0
+evt_SYN000232,sub_SYN00151,False,,none,0.0
+evt_SYN000233,sub_SYN00152,True,2026-03-27 08:35:00,auto_retry,365.0
+evt_SYN000234,sub_SYN00153,True,2026-04-28 22:13:00,auto_retry,358.0
+evt_SYN000235,sub_SYN00153,True,2026-05-26 16:11:00,auto_retry,351.76
+evt_SYN000236,sub_SYN00154,True,2024-09-29 11:57:00,customer_self_serve,306.0
+evt_SYN000237,sub_SYN00155,True,2025-12-26 02:58:00,auto_retry,313.0
+evt_SYN000238,sub_SYN00155,True,2026-01-17 12:20:00,auto_retry,313.0
+evt_SYN000239,sub_SYN00156,True,2025-01-26 11:09:00,auto_retry,650.0
+evt_SYN000240,sub_SYN00157,True,2025-08-23 12:08:00,auto_retry,734.59
+evt_SYN000241,sub_SYN00158,True,2025-08-05 07:58:00,auto_retry,355.0
+evt_SYN000242,sub_SYN00158,True,2025-09-10 20:21:00,auto_retry,355.0
+evt_SYN000243,sub_SYN00158,True,2025-09-30 00:41:00,auto_retry,355.0
+evt_SYN000244,sub_SYN00159,True,2026-06-04 10:58:00,auto_retry,389.0
+evt_SYN000245,sub_SYN00159,False,,none,0.0
+evt_SYN000246,sub_SYN00159,False,,none,0.0
+evt_SYN000247,sub_SYN00160,True,2026-04-18 11:19:00,customer_self_serve,2573.0
+evt_SYN000248,sub_SYN00161,False,,none,0.0
+evt_SYN000249,sub_SYN00162,True,2026-05-29 16:04:00,customer_self_serve,116.19
+evt_SYN000250,sub_SYN00163,True,2026-06-21 08:16:00,auto_retry,122.0
+evt_SYN000251,sub_SYN00164,True,2025-12-06 20:50:00,auto_retry,288.08
+evt_SYN000252,sub_SYN00164,True,2026-01-04 15:20:00,auto_retry,335.0
+evt_SYN000253,sub_SYN00165,True,2025-09-17 15:38:00,auto_retry,316.0
+evt_SYN000254,sub_SYN00165,True,2026-01-22 19:23:00,auto_retry,316.0
+evt_SYN000255,sub_SYN00166,True,2024-10-05 09:16:00,auto_retry,941.0
+evt_SYN000256,sub_SYN00166,True,2024-10-30 20:37:00,customer_self_serve,941.0
+evt_SYN000257,sub_SYN00167,False,,none,0.0
+evt_SYN000258,sub_SYN00167,False,,none,0.0
+evt_SYN000259,sub_SYN00168,True,2025-12-18 17:51:00,auto_retry,124.0
+evt_SYN000260,sub_SYN00169,False,,none,0.0
+evt_SYN000261,sub_SYN00170,True,2026-06-15 18:02:00,auto_retry,706.0
+evt_SYN000262,sub_SYN00171,True,2026-06-29 08:17:00,auto_retry,171.98
+evt_SYN000263,sub_SYN00171,False,,none,0.0
+evt_SYN000264,sub_SYN00172,True,2026-06-07 10:43:00,auto_retry,375.0
+evt_SYN000265,sub_SYN00173,False,,none,0.0
+evt_SYN000266,sub_SYN00174,True,2025-11-09 04:25:00,auto_retry,79.0
+evt_SYN000267,sub_SYN00175,True,2026-02-02 12:59:00,customer_self_serve,189.0
+evt_SYN000268,sub_SYN00176,False,,none,0.0
+evt_SYN000269,sub_SYN00177,False,,none,0.0
+evt_SYN000270,sub_SYN00178,False,,none,0.0
+evt_SYN000271,sub_SYN00178,True,2025-12-06 03:28:00,customer_self_serve,405.0
+evt_SYN000272,sub_SYN00178,True,2025-12-28 08:38:00,customer_self_serve,405.0
+evt_SYN000273,sub_SYN00179,True,2026-04-27 00:11:00,auto_retry,880.0
+evt_SYN000274,sub_SYN00180,True,2026-05-23 10:28:00,auto_retry,467.0
+evt_SYN000275,sub_SYN00180,True,2026-06-12 17:24:00,auto_retry,467.0
+evt_SYN000276,sub_SYN00180,True,2026-07-12 13:09:00,customer_self_serve,467.0
+evt_SYN000277,sub_SYN00180,True,2026-08-07 15:43:00,auto_retry,467.0
+evt_SYN000278,sub_SYN00181,False,,none,0.0
+evt_SYN000279,sub_SYN00181,False,,none,0.0
+evt_SYN000280,sub_SYN00182,True,2025-06-30 06:55:00,auto_retry,935.0
+evt_SYN000281,sub_SYN00183,True,2025-08-21 22:34:00,auto_retry,373.0
+evt_SYN000282,sub_SYN00184,True,2026-06-07 10:23:00,customer_self_serve,467.0
+evt_SYN000283,sub_SYN00184,True,2026-07-12 15:56:00,auto_retry,467.0
+evt_SYN000284,sub_SYN00184,False,,none,0.0
+evt_SYN000285,sub_SYN00185,False,,none,0.0
+evt_SYN000286,sub_SYN00185,False,,none,0.0
+evt_SYN000287,sub_SYN00185,True,2025-03-18 01:59:00,customer_self_serve,4315.0
+evt_SYN000288,sub_SYN00186,False,,none,0.0
+evt_SYN000289,sub_SYN00187,True,2026-05-15 15:20:00,auto_retry,3237.0
+evt_SYN000290,sub_SYN00188,False,,none,0.0
+evt_SYN000291,sub_SYN00188,True,2026-05-07 17:34:00,auto_retry,191.0
+evt_SYN000292,sub_SYN00188,True,2026-05-22 01:45:00,auto_retry,191.0
+evt_SYN000293,sub_SYN00189,False,,none,0.0
+evt_SYN000294,sub_SYN00190,False,,none,0.0
+evt_SYN000295,sub_SYN00191,True,2025-03-02 12:01:00,auto_retry,85.0
+evt_SYN000296,sub_SYN00192,True,2025-12-24 23:17:00,customer_self_serve,427.0
+evt_SYN000297,sub_SYN00193,True,2026-03-14 10:33:00,customer_self_serve,465.0
+evt_SYN000298,sub_SYN00193,True,2026-04-11 16:53:00,auto_retry,465.0
+evt_SYN000299,sub_SYN00193,True,2026-05-08 14:00:00,auto_retry,465.0
+evt_SYN000300,sub_SYN00193,True,2026-06-09 23:14:00,auto_retry,465.0
+evt_SYN000301,sub_SYN00194,True,2025-10-04 12:32:00,auto_retry,104.0
+evt_SYN000302,sub_SYN00194,True,2026-02-28 04:31:00,customer_self_serve,104.0
+evt_SYN000303,sub_SYN00195,True,2025-11-21 10:38:00,auto_retry,405.0
+evt_SYN000304,sub_SYN00195,False,,none,0.0
+evt_SYN000305,sub_SYN00196,True,2026-01-14 14:33:00,customer_self_serve,749.0
+evt_SYN000306,sub_SYN00196,True,2026-02-22 23:45:00,auto_retry,749.0
+evt_SYN000307,sub_SYN00196,True,2026-03-17 06:24:00,auto_retry,749.0
+evt_SYN000308,sub_SYN00197,False,,none,0.0
+evt_SYN000309,sub_SYN00197,True,2026-07-22 14:00:00,customer_self_serve,170.0
+evt_SYN000310,sub_SYN00197,True,2026-08-18 16:25:00,auto_retry,170.0
+evt_SYN000311,sub_SYN00198,True,2025-06-07 11:18:00,auto_retry,410.0
+evt_SYN000312,sub_SYN00199,True,2026-04-12 14:14:00,auto_retry,355.0

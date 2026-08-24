@@ -13,6 +13,31 @@ venv/
 data/*.db
 data/*.db-journal
 
+# Day 4 — generated model artifacts and evaluation reports (regenerate via
+# model/train.py + evaluation/evaluate_models.py; not source, don't commit
+# binary model files or regenerable plots/metrics)
+model/artifacts/
+model/reports/
+
+# Day 5 — generated policy evaluation reports (regenerate via
+# evaluation/evaluate_policy.py; not source)
+evaluation/reports/
+
+# Day 6 — generated candidate-aware model artifacts (regenerate via
+# model/train_candidate_model.py; not source). data/raw/counterfactual_outcomes.csv
+# is NOT ignored -- like Day 3's other data/raw/*.csv files, it's small,
+# deterministic, and reviewable in a diff, so it's committed as data, not
+# treated as a build artifact.
+model/candidate_artifacts/
+
+# Day 7 — generated pairwise ranking model artifacts (regenerate via
+# model/train_ranking_model.py; not source)
+model/ranking_artifacts/
+
+# Day 8 — generated latent-target regression artifacts (regenerate via
+# model/train_latent_target_model.py; not source)
+model/latent_target_artifacts/
+
 # OS / editor noise
 .DS_Store
 .vscode/
