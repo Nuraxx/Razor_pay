@@ -25,6 +25,13 @@ class Settings:
     APP_PORT: int = int(os.getenv("APP_PORT", "8000"))
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 
+    # Day 11 -- LLM-assisted communication layer (llm/). "mock" (default) makes
+    # zero network calls and needs no API key; the project runs fully offline
+    # with this unset. Only "anthropic" requires ANTHROPIC_API_KEY.
+    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "mock")
+    ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+    ANTHROPIC_MODEL: str = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5")
+
     def validate_webhook_secret_present(self) -> None:
         if not self.RAZORPAY_WEBHOOK_SECRET:
             raise RuntimeError(

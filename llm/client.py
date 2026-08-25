@@ -48,6 +48,7 @@ class LLMProviderError(Exception):
 
 class LLMClient(abc.ABC):
     model_name: str
+    provider_name: str  # "mock" | "anthropic" -- used by llm/service.py to label LLMResult.provider
 
     @abc.abstractmethod
     def complete(self, system_prompt: str, user_prompt: str, *, max_tokens: int = 512) -> str:
@@ -65,6 +66,7 @@ class MockLLMClient(LLMClient):
     project's test suite and CI."""
 
     model_name = MOCK_MODEL_NAME
+    provider_name = "mock"
 
     def complete(self, system_prompt: str, user_prompt: str, *, max_tokens: int = 512) -> str:
         # Deliberately simple, deterministic routing by a marker embedded in
@@ -82,6 +84,8 @@ class AnthropicLLMClient(LLMClient):
     lazily inside __init__ (not at module import time) so importing this
     module -- and running the mock-mode test suite -- never requires the
     package to be installed at all."""
+
+    provider_name = "anthropic"
 
     def __init__(self, api_key: str, model: str = DEFAULT_ANTHROPIC_MODEL):
         try:

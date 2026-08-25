@@ -39,6 +39,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -171,3 +172,91 @@ class PolicyDecision(Base):
     # "always_fallback_when_below_margin" | "no_action_when_below_margin" |
     # "keep_model_when_better_than_rule" | "keep_model_unless_rule_has_clear_advantage"
     fallback_strategy: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class LLMInvocation(Base):
+    """
+    Day 11: one row per LLM call (any of the 3 jobs in llm/service.py).
+    Every invocation ALSO gets a companion audit_log row (actor="llm",
+    reason includes task_name/success/error_type) -- this table exists
+    alongside audit_log, not instead of it, so LLM calls are both
+    queryable in their own right (this table) and part of the single
+    unified narrative log every other day's decisions already use
+    (audit_log). Never stores an API key, webhook secret, or raw auth
+    header -- only `structured_output` (validated JSON) and metadata.
+
+    `event_id` is set for the two per-event jobs (outreach microcopy,
+    promise-to-pay parsing); `batch_id` is set instead for the batch-level
+    explanation job. Exactly one of the two is populated per row.
+    """
+    __tablename__ = "llm_invocations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    batch_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+
+    # "outreach_microcopy" | "promise_to_pay_parse" | "batch_explanation"
+    task_name: Mapped[str] = mapped_column(String(32), index=True)
+    model_name: Mapped[str] = mapped_column(String(64))
+    prompt_version: Mapped[str] = mapped_column(String(32))
+    provider: Mapped[str] = mapped_column(String(16))  # "mock" | "anthropic"
+    success: Mapped[bool] = mapped_column(Boolean)
+    structured_output: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON-serialized structured_result, or fallback result if success=False
+    error_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class PromiseToPay(Base):
+    """
+    First-class, persistent promise-to-pay object -- the structured result of
+    llm/service.py::parse_promise_to_pay, deterministically validated
+    (policy/promise_to_pay.py) and, if valid, capable of overriding the
+    policy-selected retry timing for its event (recovery/orchestrator.py).
+
+    Deliberately does NOT store the customer's raw reply text -- only a
+    SHA-256 hash of it (`source_text_hash`), used solely to detect an exact
+    duplicate reply. This matches the project's existing convention: even
+    `llm_invocations.structured_output` never stores raw customer text,
+    only the validated structured parse.
+
+    `status` lifecycle (see policy/promise_to_pay.py for the exact rules):
+      VALID           -- date parsed, in the future, confidence >= threshold.
+                         Eligible to override retry timing.
+      LOW_CONFIDENCE  -- parsed cleanly but below the confidence threshold.
+      INVALID_DATE    -- no date extracted, or not a parseable ISO date.
+      EXPIRED         -- date parsed but not strictly in the future.
+      SUPERSEDED      -- was VALID, but a newer distinct reply for the same
+                         event_id replaced it as the active promise.
+    Only these five states are modeled -- there is no live payment
+    execution loop in this project to observe an actual FULFILLED/BROKEN
+    outcome against, so those states would be theatrical, not real.
+
+    `override_applied` / `override_outcome` are populated by the
+    orchestrator every time it evaluates this promise against compliance --
+    not merely whether the promise was VALID, but whether ITS retry timing
+    was actually used for a real payment decision.
+    """
+
+    __tablename__ = "promises_to_pay"
+    __table_args__ = (UniqueConstraint("event_id", "source_text_hash", name="uq_promise_event_text"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_id: Mapped[int] = mapped_column(Integer, index=True)  # FK to failure_events.id (logical) -- same convention as PolicyDecision.event_id
+    subscription_id: Mapped[str] = mapped_column(String(64), index=True)
+
+    promised_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)  # None unless status == VALID
+    confidence: Mapped[float] = mapped_column(Float)
+    channel: Mapped[str] = mapped_column(String(32))
+
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    status_reason: Mapped[str] = mapped_column(Text)
+
+    source_text_hash: Mapped[str] = mapped_column(String(64), index=True)  # sha256 hex of the raw reply text -- the raw text itself is never stored
+    llm_invocation_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # FK to llm_invocations.id (logical) -- the parse that produced this row
+
+    override_applied: Mapped[bool] = mapped_column(Boolean, default=False)  # this promise's timing was fed into a real orchestration decision
+    override_outcome: Mapped[str | None] = mapped_column(String(64), nullable=True)  # "accepted" | "rejected_by_compliance: <reason>" | None (never evaluated yet)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)

@@ -38,6 +38,10 @@ model/ranking_artifacts/
 # model/train_latent_target_model.py; not source)
 model/latent_target_artifacts/
 
+# CatBoost training-log dump (written to cwd on every model/train*.py run;
+# not source, not a reviewable artifact)
+catboost_info/
+
 # OS / editor noise
 .DS_Store
 .vscode/

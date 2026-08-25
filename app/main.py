@@ -1,10 +1,15 @@
 """
-Day 1 scope, exactly:
-
 Razorpay Test Mode -> webhook -> zrok -> FastAPI -> HMAC verification
--> idempotency check -> SQLite -> stored structured event.
+-> idempotency check -> SQLite -> stored structured event -> classification
+-> recovery orchestration (policy/compliance/LLM) -> audit trail.
 
-No classification, no ML, no LLM, no policy logic, no UI. Those are Day 2+.
+FIX #2 (full-system audit): the webhook handler used to stop at "stored" --
+classification and orchestration required a separately-run script. It now
+continues automatically into recovery/webhook_pipeline.py::process_raw_event
+for every `payment.failed` event, right after the raw event is durably
+committed. See that module's docstring for exactly which events qualify and
+why, and the try/except below for why a downstream failure can never
+un-store an already-verified webhook delivery.
 """
 import json
 from contextlib import asynccontextmanager
@@ -17,6 +22,7 @@ from app.db import get_db, init_db
 from app.logging_config import log
 from app.models import AuditLog, RawEvent
 from app.webhook_security import is_valid_signature
+from recovery.webhook_pipeline import process_raw_event
 
 
 @asynccontextmanager
@@ -111,4 +117,29 @@ async def razorpay_webhook(request: Request, db: Session = Depends(get_db)) -> R
         "Stored event_type=%s event_id=%s payment_id=%s error_reason=%s (raw_events.id=%s)",
         event_type, event_id, payment_entity.get("id"), payment_entity.get("error_reason"), raw_event.id,
     )
-    return Response(status_code=200, content="stored")
+
+    # 6. Continue automatically into classification + orchestration (FIX #2).
+    #    The raw event above is ALREADY committed -- a failure here can
+    #    never un-store an already-verified webhook delivery, never
+    #    duplicates any business action (process_raw_event's own stages are
+    #    each independently idempotent), and never turns this response into
+    #    a 4xx/5xx (which would just make Razorpay redeliver a payload whose
+    #    storage already succeeded -- redelivery cannot fix an orchestration
+    #    bug). The response body honestly reports what actually happened.
+    try:
+        orchestration_outcome = process_raw_event(db, raw_event)
+    except Exception:
+        db.rollback()
+        log.exception("Orchestration failed for raw_events.id=%s after successful storage -- raw event remains stored and reprocessable", raw_event.id)
+        db.add(
+            AuditLog(
+                raw_event_id=raw_event.id,
+                action="orchestration_failed_after_storage",
+                reason="unhandled exception during classify+orchestrate; raw event remains stored; safe to reprocess via scripts/reprocess_raw_events.py",
+                actor="system",
+            )
+        )
+        db.commit()
+        orchestration_outcome = "failed"
+
+    return Response(status_code=200, content=f"stored; orchestration={orchestration_outcome}")
