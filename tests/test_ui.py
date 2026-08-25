@@ -251,6 +251,97 @@ def test_promise_to_pay_scenario_overrides_retry_timing():
 
 
 # ---------------------------------------------------------------------------
+# FIX pass: statistical significance + economics sections (Analytics page)
+# ---------------------------------------------------------------------------
+
+def test_analytics_page_statistical_values_load_from_real_report():
+    from streamlit.testing.v1 import AppTest
+
+    report = data.load_report("decision_engine_v4_evaluation.json")
+    if report is None or "statistical_tests" not in report:
+        pytest.skip("no evaluation report with statistical_tests available in this environment")
+
+    at = AppTest.from_file(APP_PATH, default_timeout=120)
+    at.run()
+    at.sidebar.radio[0].set_value("Analytics").run()
+    assert not at.exception
+    rendered_text = " ".join(md.value for md in at.markdown) + " ".join(c.value for c in at.caption)
+    assert "McNemar p-value" in rendered_text
+    assert "Recovery-rate delta" in rendered_text
+
+
+def test_analytics_page_economics_values_load_from_real_report():
+    from streamlit.testing.v1 import AppTest
+
+    report = data.load_report("decision_engine_v4_evaluation.json")
+    if report is None or "economics" not in report:
+        pytest.skip("no evaluation report with economics available in this environment")
+
+    at = AppTest.from_file(APP_PATH, default_timeout=120)
+    at.run()
+    at.sidebar.radio[0].set_value("Analytics").run()
+    assert not at.exception
+    rendered_text = " ".join(md.value for md in at.markdown) + " ".join(c.value for c in at.caption)
+    assert "Merchant Recovery" in rendered_text
+    assert "Razorpay Fee Take" in rendered_text
+    assert "Net Recovery Value" in rendered_text
+
+
+def test_analytics_page_missing_report_handled_safely(monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setattr(data, "load_report", lambda name: None)
+    at = AppTest.from_file(APP_PATH, default_timeout=120)
+    at.run()
+    at.sidebar.radio[0].set_value("Analytics").run()
+    assert not at.exception
+
+
+def test_render_statistical_significance_section_handles_none_report():
+    import ui.app as app
+
+    app.render_statistical_significance_section(None)  # must not raise
+    app.render_statistical_significance_section({})  # must not raise
+    app.render_statistical_significance_section({"statistical_tests": {}})  # missing sub-keys would raise if accessed unsafely -- but this dict itself IS present, so it's the "real report, degenerate shape" case, not "missing report"
+
+
+def test_render_economics_section_handles_none_report():
+    import ui.app as app
+
+    app.render_economics_section(None)  # must not raise
+    app.render_economics_section({})  # must not raise
+
+
+def test_render_statistical_significance_section_with_synthetic_report():
+    import ui.app as app
+
+    report = {
+        "realized_counterfactual": {
+            "fixed_retry": {"recovery_rate": 0.80, "total_recovered_rs": 21854.10},
+            "day10_improved_fallback": {"recovery_rate": 0.70, "total_recovered_rs": 19997.23, "incremental_rs_vs_fixed_retry": -1856.87},
+        },
+        "statistical_tests": {
+            "population": {"n_events": 60, "held_out_split": "test"},
+            "mcnemar": {"policy_a": "day10_improved_fallback", "policy_b": "fixed_retry", "only_a_recovered": 3, "only_b_recovered": 9, "p_value": 0.146, "method": "exact_binomial"},
+            "bootstrap_ci": {"point_estimate": -1856.87, "lower_bound": -4878.20, "upper_bound": 1295.62, "confidence_level": 0.95, "n_resamples": 10000, "seed": 42},
+        },
+    }
+    app.render_statistical_significance_section(report)  # must not raise
+
+
+def test_render_economics_section_with_synthetic_report():
+    import ui.app as app
+
+    report = {
+        "economics": {
+            "fixed_retry": {"recovered_gmv": 21854.10, "intervention_cost": 300.0, "razorpay_fee_take": 515.76, "net_recovery_value": 21038.34},
+            "day10_improved_fallback": {"recovered_gmv": 19997.23, "intervention_cost": 300.0, "razorpay_fee_take": 471.93, "net_recovery_value": 19225.30},
+        }
+    }
+    app.render_economics_section(report)  # must not raise
+
+
+# ---------------------------------------------------------------------------
 # Dynamic test count
 # ---------------------------------------------------------------------------
 

@@ -50,6 +50,11 @@ POLICY_LABELS = {
     "fixed_retry": "Fixed Retry", "rule_based": "Rule-Based", "day8_model_b_alone": "Day-8 Model B",
     "day9_original_fallback": "Day-9 Policy", "day10_improved_fallback": "Day-10 Policy", "oracle_policy": "Oracle",
 }
+# FIX pass: the one headline baseline comparison the statistical-significance
+# and economics sections below focus on (matches
+# evaluation/evaluate_decision_engine_v4.py's DEPLOYED_POLICY_NAME / HEADLINE_BASELINE_NAME).
+DEPLOYED_POLICY_KEY = "day10_improved_fallback"
+BASELINE_POLICY_KEY = "fixed_retry"
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +86,88 @@ def render_policy_comparison_charts(report: dict) -> None:
         "selected. **Realized counterfactual recovery** is a single stochastic sampled outcome under that same simulation. "
         "They are deliberately shown separately, never combined into one number — see README \"Day 9\" for why conflating "
         "them would overstate confidence. Neither reflects real Razorpay production performance."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Statistical significance + economics (FIX pass) -- used by Analytics
+# ---------------------------------------------------------------------------
+
+def render_statistical_significance_section(report: dict) -> None:
+    """Shows the McNemar's-test / bootstrap-CI results
+    `evaluate_decision_engine_v4.py::summarize_statistical_tests` already
+    computed and wrote into the report -- never recomputed here, and never
+    hidden if the result is negative (deployed policy currently loses to
+    Fixed Retry on realized ₹ -- see README §16/§19)."""
+    stats = (report or {}).get("statistical_tests") or {}
+    mc = stats.get("mcnemar")
+    bs = stats.get("bootstrap_ci")
+    if not mc or not bs:
+        empty_state("No statistical test results available — run evaluation/evaluate_decision_engine_v4.py to generate them.")
+        return
+
+    realized = report.get("realized_counterfactual", {})
+    deployed = realized.get(DEPLOYED_POLICY_KEY, {})
+    baseline = realized.get(BASELINE_POLICY_KEY, {})
+
+    rate_delta_pp = (deployed.get("recovery_rate", 0.0) - baseline.get("recovery_rate", 0.0)) * 100
+    rs_delta = deployed.get("incremental_rs_vs_fixed_retry", bs["point_estimate"])
+
+    cols = st.columns(4)
+    with cols[0]:
+        kpi_card("Recovery-rate delta", f"{rate_delta_pp:+.1f} pp", f"{POLICY_LABELS.get(DEPLOYED_POLICY_KEY, DEPLOYED_POLICY_KEY)} vs Fixed Retry")
+    with cols[1]:
+        kpi_card("₹ recovered delta", money(rs_delta), f"{bs['confidence_level']:.0%} CI [{money(bs['lower_bound'])}, {money(bs['upper_bound'])}]")
+    with cols[2]:
+        kpi_card("McNemar p-value", f"{mc['p_value']:.4f}", f"b={mc['only_a_recovered']} c={mc['only_b_recovered']} ({mc['method']})")
+    with cols[3]:
+        kpi_card("Test-set size", str(stats.get("population", {}).get("n_events", "—")), "held-out synthetic events")
+
+    significant = mc["p_value"] < 0.05
+    ci_excludes_zero = bs["lower_bound"] > 0 or bs["upper_bound"] < 0
+    direction = "an improvement over" if rs_delta > 0 else "a regression versus" if rs_delta < 0 else "no difference from"
+    verdict = "statistically significant" if significant else "NOT statistically significant"
+    st.caption(
+        f"The deployed policy shows {direction} Fixed Retry on this held-out synthetic test set "
+        f"(₹{rs_delta:+,.2f}), and this difference is **{verdict} at p<0.05** (McNemar {mc['method']}, "
+        f"p={mc['p_value']:.4f}; the bootstrap {bs['confidence_level']:.0%} CI "
+        f"{'excludes' if ci_excludes_zero else 'includes'} zero). This is a SYNTHETIC COUNTERFACTUAL "
+        "EVALUATION — these figures quantify uncertainty within this held-out test split only and do not "
+        "establish real-world Razorpay production superiority."
+    )
+
+
+def render_economics_section(report: dict) -> None:
+    """Merchant-recovered GMV, this project's own intervention cost, and
+    Razorpay's disclosed fee take, kept as separate fields per the
+    specification -- never blended into one number (policy/economics.py)."""
+    if not report or "economics" not in report:
+        empty_state("No economics data available — run evaluation/evaluate_decision_engine_v4.py to generate it.")
+        return
+
+    econ = report["economics"]
+    deployed = econ.get(DEPLOYED_POLICY_KEY, {})
+    baseline = econ.get(BASELINE_POLICY_KEY, {})
+
+    st.caption(f"Deployed policy ({POLICY_LABELS.get(DEPLOYED_POLICY_KEY, DEPLOYED_POLICY_KEY)}), synthetic held-out test set:")
+    cols = st.columns(4)
+    with cols[0]:
+        kpi_card("Merchant Recovery", money(deployed.get("recovered_gmv")), "recovered GMV")
+    with cols[1]:
+        kpi_card("Intervention Cost", money(deployed.get("intervention_cost")), "policy/costs.py")
+    with cols[2]:
+        kpi_card("Razorpay Fee Take", money(deployed.get("razorpay_fee_take")), "~2% + 18% GST, gross")
+    with cols[3]:
+        kpi_card("Net Recovery Value", money(deployed.get("net_recovery_value")), "GMV − cost − fee")
+
+    st.caption(
+        f"For comparison, Fixed Retry: recovered GMV {money(baseline.get('recovered_gmv'))}, "
+        f"intervention cost {money(baseline.get('intervention_cost'))}, Razorpay fee take "
+        f"{money(baseline.get('razorpay_fee_take'))}, net recovery value {money(baseline.get('net_recovery_value'))}. "
+        "Merchant-recovered GMV and Razorpay's own fee take are two separate numbers, never combined into one "
+        "blended metric. Fee take uses the specification's disclosed ~2% + 18% GST domestic card rate, applied "
+        "uniformly (Razorpay's own public materials are inconsistent on UPI's exact rate — see README). Figures "
+        "are part of the same SYNTHETIC COUNTERFACTUAL EVALUATION as the rest of this page."
     )
 
 
@@ -355,6 +442,16 @@ def page_analytics() -> None:
         render_policy_comparison_charts(report)
     else:
         empty_state("No evaluation report available.")
+
+    st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
+    st.markdown("##### Statistical significance — Fixed Retry vs Deployed Policy")
+    source_tag("synthetic")
+    render_statistical_significance_section(report)
+
+    st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
+    st.markdown("##### Recovery economics")
+    source_tag("synthetic")
+    render_economics_section(report)
 
     st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
     c1, c2 = st.columns(2)

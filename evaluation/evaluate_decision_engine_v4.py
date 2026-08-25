@@ -35,11 +35,12 @@ import json
 import pandas as pd
 
 from classification.rules import classify
+from evaluation.statistics import bootstrap_delta_ci, mcnemar_test
 from model.candidate_preprocessing import split_candidate_dataset
 from model.latent_target_preprocessing import LATENT_VALUE_COLUMN, PROJECT_ROOT, build_candidate_level_dataset_with_latent_targets
 from model.train_latent_target_model import load_latent_target_model
 from policy.baselines import fixed_retry_baseline, rule_based_baseline
-from policy.costs import DEFAULT_COSTS
+from policy.costs import DEFAULT_COSTS, cost_for_candidate
 from policy.decision_engine import DEFAULT_ABSTENTION_THRESHOLD_RS, NO_ACTION, decide_engine
 from policy.decision_engine_v4 import (
     DEFAULT_FALLBACK_ADVANTAGE_THRESHOLD_RS,
@@ -49,6 +50,7 @@ from policy.decision_engine_v4 import (
     FALLBACK_MODES,
     decide_engine_v4,
 )
+from policy.economics import compute_recovery_economics
 from policy.guardrails import validate_candidate
 from policy.retry_candidates import Candidate
 
@@ -57,6 +59,18 @@ MARGIN_THRESHOLD_CANDIDATES = [0, 5, 10, 15, 20, 25, 50, 75, 100]
 FALLBACK_ADVANTAGE_CANDIDATES = [0, 5, 10, 15, 20, 25, 50, 75, 100]  # reused from the same set -- see module docstring
 
 POLICY_NAMES = ["fixed_retry", "rule_based", "day8_model_b_alone", "day9_original_fallback", "day10_improved_fallback", "oracle_policy"]
+
+# The single headline comparison the specification and dashboard care about
+# most (brief: "the agent vs. Razorpay's own baseline" / "clearing all three
+# baselines, not just the easiest one"). Both the McNemar test and the
+# bootstrap CI below are computed for this one pair -- see
+# evaluation/statistics.py's module docstring for why McNemar is restricted
+# to the binary outcome only.
+DEPLOYED_POLICY_NAME = "day10_improved_fallback"
+HEADLINE_BASELINE_NAME = "fixed_retry"
+BOOTSTRAP_N_RESAMPLES = 10000
+BOOTSTRAP_SEED = 42
+BOOTSTRAP_CONFIDENCE_LEVEL = 0.95
 
 EVENT_FEATURE_KEYS = [
     "day_of_month", "days_to_nearest_payday_window", "prior_if_failure_count", "prior_if_self_resolved_rate",
@@ -248,6 +262,82 @@ def summarize_operational(events: pd.DataFrame, day10_config: dict) -> dict:
     }
 
 
+def summarize_statistical_tests(
+    events: pd.DataFrame,
+    *,
+    deployed_policy: str = DEPLOYED_POLICY_NAME,
+    baseline_policy: str = HEADLINE_BASELINE_NAME,
+    n_resamples: int = BOOTSTRAP_N_RESAMPLES,
+    seed: int = BOOTSTRAP_SEED,
+    confidence_level: float = BOOTSTRAP_CONFIDENCE_LEVEL,
+) -> dict:
+    """
+    Statistical significance for the SAME headline comparison
+    (`realized_summary`'s `incremental_rs_vs_fixed_retry`) already reported
+    elsewhere in this script -- no new evaluation population, no new outcome
+    definition. `events` is the exact per-event test-set DataFrame
+    `evaluate_events_v4` already built; the two columns used below
+    (`{policy}__realized_recovered`, `{policy}__realized_amount_recovered`)
+    are the SAME paired outcome columns `summarize_realized` already reads.
+
+    McNemar's test uses ONLY the paired binary `realized_recovered` column
+    (never the continuous ₹ amounts -- see evaluation/statistics.py). The
+    bootstrap CI uses the continuous `realized_amount_recovered` column.
+    Both remain part of the SYNTHETIC COUNTERFACTUAL EVALUATION this whole
+    report is (see `report["label"]`) and do not establish real-world
+    production superiority.
+    """
+    mcnemar_result = mcnemar_test(
+        events[f"{deployed_policy}__realized_recovered"].tolist(),
+        events[f"{baseline_policy}__realized_recovered"].tolist(),
+        policy_a=deployed_policy, policy_b=baseline_policy, exact=True,
+    )
+    bootstrap_result = bootstrap_delta_ci(
+        events[f"{deployed_policy}__realized_amount_recovered"].to_numpy(),
+        events[f"{baseline_policy}__realized_amount_recovered"].to_numpy(),
+        policy_a=deployed_policy, policy_b=baseline_policy, metric_name="realized_rs_recovered",
+        n_resamples=n_resamples, seed=seed, confidence_level=confidence_level,
+    )
+    return {
+        "population": {
+            "held_out_split": "test",
+            "n_events": len(events),
+            "source": "evaluation/evaluate_decision_engine_v4.py::evaluate_events_v4 -- the SAME test-set events and outcome columns the rest of this report's realized_counterfactual section uses",
+        },
+        "mcnemar": mcnemar_result.to_dict(),
+        "bootstrap_ci": bootstrap_result.to_dict(),
+        "interpretation_note": (
+            "Both tests quantify statistical uncertainty WITHIN this SYNTHETIC COUNTERFACTUAL "
+            "EVALUATION's held-out test split (n={n}) -- they do not establish, and must never be cited "
+            "as establishing, real-world Razorpay production superiority. McNemar's test is restricted to "
+            "the paired binary realized_recovered outcome (never applied to the continuous ₹ amounts, "
+            "which is what the bootstrap CI is for instead)."
+        ).format(n=len(events)),
+    }
+
+
+def summarize_economics(events: pd.DataFrame, realized_summary: dict) -> dict:
+    """
+    Adds the specification-required GMV/fee/net split (policy/economics.py)
+    on top of the EXISTING `realized_summary["...']["total_recovered_rs"]`
+    figure -- never recomputes recovered GMV, never blends it with the fee
+    take. `intervention_cost` is summed from the EXISTING
+    `policy/costs.py::cost_for_candidate` over exactly the real
+    (non-NO_ACTION) actions each policy actually selected in this same test
+    run -- the same cost model policy/decision_engine.py already uses at
+    decision time, applied here to the REALIZED per-policy selections for a
+    report-level total, not a new cost model.
+    """
+    economics = {}
+    for name in POLICY_NAMES:
+        total_intervention_cost = float(
+            sum(cost_for_candidate(t, DEFAULT_COSTS) for t in events[f"{name}__selected_candidate_type"] if t != NO_ACTION)
+        )
+        recovered_gmv = realized_summary[name]["total_recovered_rs"]
+        economics[name] = compute_recovery_economics(recovered_gmv, total_intervention_cost).to_dict()
+    return economics
+
+
 def print_decision_trace(events: pd.DataFrame, n: int = 12) -> None:
     print(f"=== Decision trace (first {n} test events) ===")
     cols = [
@@ -300,6 +390,8 @@ def main() -> None:
     latent_summary = summarize_latent_economic(events)
     realized_summary = summarize_realized(events)
     operational_summary = summarize_operational(events, chosen_config)
+    statistical_tests = summarize_statistical_tests(events)
+    economics_summary = summarize_economics(events, realized_summary)
 
     report = {
         "label": "SYNTHETIC COUNTERFACTUAL EVALUATION -- does not measure real Razorpay recovery performance.",
@@ -307,6 +399,8 @@ def main() -> None:
         "latent_economic": latent_summary,
         "realized_counterfactual": realized_summary,
         "operational": operational_summary,
+        "statistical_tests": statistical_tests,
+        "economics": economics_summary,
     }
     with open(REPORTS_DIR / "decision_engine_v4_evaluation.json", "w") as f:
         json.dump(report, f, indent=2, default=str)
@@ -326,6 +420,17 @@ def main() -> None:
     print("OPERATIONAL (Day-10 decision engine only):")
     for k, v in operational_summary.items():
         print(f"  {k}: {v}")
+    print()
+    print(f"STATISTICAL TESTS ({DEPLOYED_POLICY_NAME} vs {HEADLINE_BASELINE_NAME}, synthetic held-out test set, n={len(events)}):")
+    mc = statistical_tests["mcnemar"]
+    print(f"  McNemar ({mc['method']}): b={mc['only_a_recovered']} c={mc['only_b_recovered']} p_value={mc['p_value']:.4f}")
+    bs = statistical_tests["bootstrap_ci"]
+    print(f"  Bootstrap CI ({bs['confidence_level']:.0%}, {bs['n_resamples']} resamples, seed={bs['seed']}): delta_rs={bs['point_estimate']:+.2f} [{bs['lower_bound']:+.2f}, {bs['upper_bound']:+.2f}]")
+    print()
+    print("ECONOMICS (GMV / intervention cost / Razorpay fee take / net -- see policy/economics.py):")
+    for name in POLICY_NAMES:
+        e = economics_summary[name]
+        print(f"  {name:26s} gmv=Rs{e['recovered_gmv']:>9.2f} intervention_cost=Rs{e['intervention_cost']:>7.2f} razorpay_fee_take=Rs{e['razorpay_fee_take']:>8.2f} net=Rs{e['net_recovery_value']:>9.2f}")
     print()
     print_decision_trace(events, n=12)
     print(f"Reports written to {REPORTS_DIR}")

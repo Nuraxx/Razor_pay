@@ -396,27 +396,54 @@ draw. The specification's core requirement — "the agent must clear all
 three baselines, not just the easiest one" — **is not currently met on
 realized money for the deployed policy.**
 
-**A second, independently-confirmed gap: the significance testing the
-specification requires does not exist in the codebase.** The specification
-calls for McNemar's test (paired, not a two-proportion z-test) on every
-recovery-lift comparison, and a bootstrap confidence interval on every
-model-vs-baseline ₹ delta. Neither is implemented anywhere in
-`evaluation/*.py` — verified by direct search of every evaluation script in
-this audit pass. A bootstrap CI exists only for the Day-4 classifier's
-ROC-AUC/PR-AUC (a model-quality metric, not a policy-vs-baseline delta).
-The one significance claim that does appear in this document's appendix
-("a 5.0pp gap is 0.66 standard errors, not statistically distinguishable
-from zero") is a manually-asserted approximation in prose, not a
-reproducible test backed by any code in this repository. Until McNemar's
-test and a bootstrap CI are actually implemented against the realized-₹
-metric, no claim in this document about "not statistically significant"
-should be treated as a measured result.
+**Statistical significance (`evaluation/statistics.py`, wired into
+`evaluate_decision_engine_v4.py`'s report as `statistical_tests`):** for the
+headline comparison above — deployed policy vs Fixed Retry, on the SAME 60
+paired held-out test events used everywhere else in this section —
 
-**A third gap: Razorpay's own fee take is never modeled.** The
-specification requires reporting both raw merchant GMV and Razorpay's
-disclosed ~2%+GST fee take as two separate numbers; no cost/fee model in
-this codebase (`policy/costs.py`) computes or reports a fee-take figure —
-only a flat, illustrative `retry_cost=₹5` intervention cost exists.
+- **McNemar's exact test** (binomial, two-sided, on the paired binary
+  `realized_recovered` outcome — never applied to the continuous ₹ amounts,
+  which is a statistically different question): of the 60 paired events,
+  3 recovered under the deployed policy but not Fixed Retry (`b`), and 9
+  recovered under Fixed Retry but not the deployed policy (`c`) — **p = 0.146**,
+  not significant at p<0.05.
+- **95% bootstrap CI** (percentile method, 10,000 resamples over paired
+  events, seed=42) on the realized-₹ delta: **−₹1,856.87 [−₹4,878.20, +₹1,295.62]**
+  — the interval spans zero, consistent with the McNemar result above.
+
+**Read together, honestly:** neither test finds the deployed policy's
+realized-₹ loss against Fixed Retry to be statistically distinguishable from
+chance at this sample size (n=60). This does **not** mean the deployed
+policy is "actually fine" — it means this evaluation cannot currently
+distinguish a real regression from sampling noise, which is itself an
+honest, disclosed limitation of a n=60 synthetic held-out slice, not a
+result to lean on either way. See `tests/test_statistics.py` for the
+methodology's own test coverage (toy contingency tables, edge cases,
+reproducibility) and §19 item 2 below.
+
+**Fee economics (`policy/economics.py`, wired into the same report as
+`economics`):** the specification's "report both raw merchant GMV and
+Razorpay's own fee take ... as two separate numbers" is now implemented.
+Fee assumption, verified against the specification rather than guessed: the
+document states domestic card payments are priced at "roughly 2% + 18% GST"
+and separately flags UPI's exact rate as an unresolved inconsistency in
+Razorpay's own public materials ("do not state a single clean UPI take-rate
+figure") — so this project applies the one verified card rate uniformly
+(effective ≈2.36% of recovered GMV, gross, i.e. fee + GST-on-the-fee) and
+documents that simplification rather than inventing a second, uncited UPI
+number. For the headline comparison, synthetic test set:
+
+| Policy | Recovered GMV | Intervention cost | Razorpay fee take (gross) | Net recovery value |
+|---|---|---|---|---|
+| Fixed Retry | ₹21,854.10 | ₹300.00 | ₹515.76 | ₹21,038.34 |
+| **Deployed policy (policy-v4)** | ₹19,997.23 | ₹300.00 | ₹471.93 | ₹19,225.30 |
+
+`net_recovery_value = recovered_gmv − intervention_cost − razorpay_fee_take`
+— a new, REALIZED, report-level summary metric, distinct from
+`policy/decision_engine.py`'s pre-existing `expected_net_value`/
+`decision_margin` (which subtracts only `intervention_cost`, computed at
+DECISION time before any fee modeling existed — both names are kept,
+documented, never merged). See `tests/test_economics.py`.
 
 Full metric definitions, every intermediate model's numbers (including two
 architectures — Day 6/7's ranking models — that scored *below random* and
@@ -492,18 +519,24 @@ pytest output as its designed function.
    without recovering it on the realized draw. The specification's core
    requirement — clearing all three baselines — is not currently met for
    the deployed policy on this metric. See §16.
-2. **McNemar's test and a bootstrap CI on baseline deltas — both required
-   by the specification — are not implemented anywhere in the codebase.**
-   Verified by direct search of every file in `evaluation/`. The one
-   significance claim in the appendix ("0.66 standard errors, not
-   significant") is an unpaired-proportion approximation asserted in prose,
-   not a reproducible, coded test. No "not statistically significant" claim
-   anywhere in this project should be treated as a measured result until
-   this is implemented.
-3. **Razorpay's own ~2%+GST fee take is never modeled or reported.** The
-   specification requires both merchant GMV and Razorpay's fee take as
-   separate reported numbers; only a flat, illustrative `retry_cost=₹5`
-   intervention cost exists in `policy/costs.py`.
+2. **McNemar's test finds the deployed-vs-Fixed-Retry realized-₹ gap not
+   statistically significant at this sample size** (exact binomial p=0.146,
+   b=3, c=9, n=60 paired events; 95% bootstrap CI on the ₹ delta spans zero:
+   [−₹4,878.20, +₹1,295.62]). This is a genuine result, not an unimplemented
+   gap (`evaluation/statistics.py`, wired into `evaluate_decision_engine_v4.py`'s
+   report as `statistical_tests`) — but it cuts both ways: it means this n=60
+   synthetic evaluation cannot currently distinguish the observed loss from
+   sampling noise either. See §16.
+3. **Razorpay's fee take is modeled at one uniform rate** (`policy/economics.py`,
+   ≈2.36% of recovered GMV, gross — the specification's disclosed "2% + 18%
+   GST" domestic card rate), applied to every recovered rupee regardless of
+   payment instrument. The specification itself flags UPI's exact take-rate
+   as an unresolved inconsistency in Razorpay's own public materials and
+   instructs against stating one clean UPI figure — this project follows
+   that instruction rather than inventing an uncited second rate, which
+   means the fee figures in §16/the dashboard are a documented
+   simplification for non-card instruments, not a precise per-instrument
+   fee model.
 4. **The deployed model was not built the way the specification's Model 1
    describes.** The specification calls for "a calibrated binary classifier
    predicting P(recover within 14 days | ...)". The project's first
@@ -551,7 +584,7 @@ pytest output as its designed function.
 | LLM: promise-to-pay parsing | **DONE** — parsed (LLM), validated (deterministic, `policy/promise_to_pay.py`), persisted (`PromiseToPay`), and capable of overriding the model's chosen retry timing through compliance in `recovery/orchestrator.py` (FIX #1). No live payment execution loop exists to observe a real fulfilled/broken outcome — see §19 item 9. |
 | LLM: batch-level report explanation | **DONE**, used by the dashboard |
 | 3 baselines (No Recovery, Fixed Retry, Rule-Based) | **PARTIAL** — implemented, but Fixed Retry simplifies Razorpay's T+3 policy to a single T+1 decision, and Rule-Based omits the spec's WhatsApp-nudge/3-day-followup behavior (no communication channel exists to implement it with). See §16. |
-| 7 evaluation metrics | **PARTIAL** — recovery rate, ₹ recovered, incremental ₹, cost-per-recovery, unnecessary-intervention rate, and customer-contact rate are computed; McNemar's test and bootstrap CI on baseline deltas (both spec-required) are not implemented anywhere, and Razorpay's fee-take is never separated from merchant GMV. See §16. |
+| 7 evaluation metrics | **PARTIAL** — recovery rate, ₹ recovered (now split into merchant GMV / Razorpay fee take / net, `policy/economics.py`), incremental ₹, cost-per-recovery, unnecessary-intervention rate, and customer-contact rate are computed; the required McNemar's-test/bootstrap-CI significance on the headline deployed-vs-Fixed-Retry comparison (`evaluation/statistics.py`) is now also implemented. See §16. |
 | Audit trail | **DONE** |
 | End-to-end automatic webhook→orchestration wiring | **DONE** (FIX #2) — a stored, verified webhook event continues automatically into classification + full orchestration in the same request; `scripts/reprocess_raw_events.py` remains available for manual re-processing of a failed/pre-fix event. |
 | Streamlit dashboard | **DONE** — 7 pages, verified via `AppTest` and direct execution, including promise-to-pay and hard-decline-communication detail |
@@ -568,9 +601,10 @@ beyond §7):
 - Set `LLM_PROVIDER=anthropic` and a real `ANTHROPIC_API_KEY` if you want
   genuinely LLM-generated (rather than deterministic mock) outreach copy,
   promise-to-pay parsing, or report narration.
-- If closing the remaining evaluation gaps (McNemar's test, bootstrap CI,
-  Razorpay fee-take modeling — §19 items 2–3) is desired, both are scoped,
-  understood gaps against the original specification, not unknowns.
+- McNemar's test, the bootstrap CI, and Razorpay fee-take modeling are now
+  implemented (§16, §19 items 2–3); a real per-instrument fee schedule (vs.
+  this project's one uniform card-rate assumption) remains a scoped,
+  understood simplification, not an unknown.
 
 ---
 ## Appendix: day-by-day development log
