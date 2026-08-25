@@ -9,8 +9,8 @@ import html
 
 import streamlit as st
 
-from ui.data import format_inr, humanize_status
 from ui.styles import inject_base_css, status_style
+from ui.utils import format_inr, humanize_status
 
 
 def inject_css() -> None:

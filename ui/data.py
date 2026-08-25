@@ -41,52 +41,13 @@ from model.candidate_preprocessing import PROJECT_ROOT
 from policy.decision_engine import EVENT_FEATURE_KEYS
 from recovery.orchestrator import RecoveryEventInput, orchestrate_recovery
 from recovery.promise_service import record_customer_reply
+from ui.utils import format_inr, format_ts, humanize_status  # noqa: F401 -- re-exported: `from ui.data import format_inr, humanize_status` and `data.format_ts` stay valid
 
 RAW_DATA_DIR = PROJECT_ROOT / "data" / "raw"
 REPORTS_DIR = PROJECT_ROOT / "evaluation" / "reports"
 
 DEMO_SAMPLE_SIZE = 60  # events orchestrated to populate the "operational demo data" pages
 DEMO_LANGUAGES = ["en", "hi", "hinglish"]
-
-
-# ---------------------------------------------------------------------------
-# Formatting helpers
-# ---------------------------------------------------------------------------
-
-def format_inr(amount: float | None) -> str:
-    """Indian-style comma grouping (e.g. 12,34,567.89), Rs-prefixed."""
-    if amount is None or (isinstance(amount, float) and pd.isna(amount)):
-        return "—"
-    negative = amount < 0
-    amount = abs(round(float(amount), 2))
-    whole, _, frac = f"{amount:.2f}".partition(".")
-    if len(whole) > 3:
-        last3 = whole[-3:]
-        rest = whole[:-3]
-        groups = []
-        while len(rest) > 2:
-            groups.insert(0, rest[-2:])
-            rest = rest[:-2]
-        if rest:
-            groups.insert(0, rest)
-        whole = ",".join(groups + [last3])
-    sign = "-" if negative else ""
-    return f"{sign}₹{whole}.{frac}"
-
-
-def format_ts(value) -> str:
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return "—"
-    ts = pd.to_datetime(value, errors="coerce")
-    if pd.isna(ts):
-        return str(value)
-    return ts.strftime("%d %b %Y, %H:%M")
-
-
-def humanize_status(value: str | None) -> str:
-    if not value:
-        return "—"
-    return str(value).replace("_", " ").title()
 
 
 # ---------------------------------------------------------------------------
