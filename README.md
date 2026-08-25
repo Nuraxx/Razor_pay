@@ -341,22 +341,33 @@ this project's own generator authored. **None of it measures real Razorpay
 recovery performance.** The dashboard and every report JSON label this
 explicitly and consistently.
 
-**Baselines** (`policy/baselines.py`) — **verified against the specification
-in this audit pass, with two real deviations found:** No Recovery (never
-acts, matches spec). Fixed Retry always selects the `plus_1_day_morning`
-(T+1) candidate — the specification defines Fixed Retry as "Razorpay's real
-policy: silent auto-retry once/day for 3 days"; the codebase implements a
-single T+1 decision, never T+3 (`plus_3_days` exists as a candidate type
-elsewhere in the system but this baseline never selects it). Rule-Based
-implements only the timing half of its spec definition (payday proximity
-≤2 days → `payday_window`, else → `plus_1_day_morning`) — the specification
-additionally calls for "one WhatsApp nudge, one follow-up 3 days later";
-no WhatsApp/SMS/voice channel exists anywhere in the codebase (`policy/costs.py`'s
-`whatsapp_cost`/`sms_cost`/`voice_cost` are unused `Rs0` placeholders), so
-this half of the baseline's definition was never built. Both deviations are
-disclosed in the appendix's Day-5 section but without being framed as
-divergence from the spec's literal baseline definitions — flagged here for
-precision.
+**Baselines** (`policy/baselines.py`) — **fixed for fidelity to the
+specification in this pass; both deviations below are now closed:**
+No Recovery (never acts, matches spec, unchanged). **Fixed Retry** now
+schedules the specification's full "silent auto-retry once/day for 3 days,
+same channel, then gives up" cadence — T+1 → T+2 → T+3 — instead of only
+ever selecting T+1. T+1 and T+3 reuse this project's existing
+`plus_1_day_morning` / `plus_3_days` candidates 1:1 (both already have real,
+independently-simulated outcome rows in `data/raw/counterfactual_outcomes.csv`);
+T+2 has no equivalent in that 5-candidate framework (never extended with a
+6th "day+2" type, and the counterfactual dataset was never generated with
+one — adding one now would mean regenerating the synthetic dataset with a
+new outcome definition, which this fix was explicitly instructed not to do).
+T+2 is still genuinely SCHEDULED (a real, distinct attempt — the retry-cost
+economics below charge for it), but contributes zero incremental recovery
+probability of its own — a deliberately conservative, disclosed
+simplification, not an invented estimate. **Rule-Based** now also attaches
+the specification's communication dimension — one deterministic WhatsApp
+nudge (fixed template, sent alongside the payday-timed retry) plus one
+follow-up 3 days later, then stop — while its own retry-timing decision
+(payday proximity ≤2 days → `payday_window`, else → `plus_1_day_morning`)
+is completely unchanged. Both fixes are purely ADDITIVE to
+`fixed_retry_baseline` / `rule_based_baseline`'s returned dicts —
+`selected_candidate_type` / `selected_candidate_datetime`, the only two
+keys `policy/decision_engine.py` / `policy/decision_engine_v4.py`'s live
+fallback tier ever reads from `rule_based_baseline`, are byte-identical to
+before this fix; the operational policy-v4 decision engine was not touched.
+See `tests/test_baseline_fidelity.py`.
 
 **Current model** (the one the live orchestrator and dashboard actually
 use): "Model B", a CatBoost regressor predicting `expected_recovery_value_latent`
@@ -377,24 +388,51 @@ policy-v4 + Model B combination with its frozen production config):**
 
 | Policy | Latent ₹ (noise-free) | vs. Fixed Retry | **Realized ₹ (stochastic)** | **vs. Fixed Retry (realized)** | Recovery rate |
 |---|---|---|---|---|---|
-| Fixed Retry (baseline) | 19,114.77 | +0.00 | 21,854.10 | +0.00 | 80.0% |
-| Rule-Based (baseline) | 19,050.32 | −64.45 | 21,431.15 | −422.95 | 76.7% |
-| Model B alone | 20,347.65 | **+1,232.88** | 21,278.18 | −575.92 | 73.3% |
-| **Deployed policy (policy-v4)** | 19,032.25 | −82.51 | **19,997.23** | **−1,856.87** | 70.0% |
-| Oracle (upper bound) | 23,031.64 | +3,916.87 | 24,275.30 | +2,421.20 | 86.7% |
+| Fixed Retry (baseline) | 19,114.77 | +0.00 | 23,296.10 | +0.00 | 85.0% |
+| Rule-Based (baseline) | 19,050.32 | −64.45 | 21,431.15 | −1,864.95 | 76.7% |
+| Model B alone | 20,347.65 | **+1,232.88** | 21,278.18 | −2,017.92 | 73.3% |
+| **Deployed policy (policy-v4)** | 19,032.25 | −82.51 | **19,997.23** | **−3,298.87** | 70.0% |
+| Oracle (upper bound) | 23,031.64 | +3,916.87 | 24,275.30 | +979.20 | 86.7% |
+
+Latent ₹ (noise-free) is unchanged by the baseline-fidelity fix below —
+it's the model's own belief about a SINGLE selected candidate, and the
+existing latent-value framework has no defined notion of a multi-attempt
+sequence to extend it to (see the fix note below); only the realized/
+statistical/economics columns, which score against actual simulated
+outcomes, change.
 
 **Read honestly, not favorably — the core finding of this evaluation:**
 Model B beats Fixed Retry on the noise-free latent economic ground truth
 (what it should achieve in expectation), but **on realized (stochastic) ₹
 recovered — the metric closest to a real outcome — every trained-model
 policy loses to the simple Fixed Retry baseline, including the policy
-actually wired into `recovery/orchestrator.py` today** (−₹1,856.87, −10
-points of recovery rate). The deployed policy's validation-tuned fallback
+actually wired into `recovery/orchestrator.py` today** (−₹3,298.87, −15
+points of recovery rate). This gap is LARGER than previously reported
+(−₹1,856.87, −10 points) because Fixed Retry itself was previously
+under-modeled as a single T+1 attempt rather than the specification's full
+3-day campaign — see "Baseline fidelity fix" below. Correcting that made
+Fixed Retry's own recovery rate rise from 80.0% to 85.0%, which widens,
+not narrows, the deployed policy's shortfall — reported here exactly as
+measured, with no attempt to tune the model back ahead of it (explicitly
+out of scope for that fix). The deployed policy's validation-tuned fallback
 logic, meant to guard against low-confidence predictions, trades away most
 of Model B's raw latent-value edge without recovering it on the realized
 draw. The specification's core requirement — "the agent must clear all
 three baselines, not just the easiest one" — **is not currently met on
 realized money for the deployed policy.**
+
+**Baseline fidelity fix (`policy/baselines.py`, `evaluation/evaluate_decision_engine_v4.py::score_fixed_retry_sequence`):**
+the table above previously scored Fixed Retry against ONLY its T+1
+attempt's own outcome row — silently understating the specification's
+"retry once/day for 3 days, then gives up" cadence as a single try. Fixed
+Retry now schedules T+1 → T+2 → T+3 (see §16 baselines paragraph above for
+exactly how T+2's missing outcome data is handled) and is scored as
+recovered if EITHER T+1's or T+3's existing, already-simulated outcome row
+recovers — using the SAME held-out test events and SAME counterfactual
+machinery as every other policy in this table, never a new outcome
+definition. Rule-Based's own recovery/₹ numbers are UNCHANGED by this fix
+(only its communication metrics below are new) — its retry-timing decision
+was never wrong, only its missing communication dimension was.
 
 **Statistical significance (`evaluation/statistics.py`, wired into
 `evaluate_decision_engine_v4.py`'s report as `statistical_tests`):** for the
@@ -404,22 +442,39 @@ paired held-out test events used everywhere else in this section —
 - **McNemar's exact test** (binomial, two-sided, on the paired binary
   `realized_recovered` outcome — never applied to the continuous ₹ amounts,
   which is a statistically different question): of the 60 paired events,
-  3 recovered under the deployed policy but not Fixed Retry (`b`), and 9
-  recovered under Fixed Retry but not the deployed policy (`c`) — **p = 0.146**,
-  not significant at p<0.05.
+  1 recovered under the deployed policy but not Fixed Retry (`b`), and 10
+  recovered under Fixed Retry but not the deployed policy (`c`) — **p = 0.0117**,
+  significant at p<0.05.
 - **95% bootstrap CI** (percentile method, 10,000 resamples over paired
-  events, seed=42) on the realized-₹ delta: **−₹1,856.87 [−₹4,878.20, +₹1,295.62]**
-  — the interval spans zero, consistent with the McNemar result above.
+  events, seed=42) on the realized-₹ delta: **−₹3,298.87 [−₹6,605.61, −₹47.65]**
+  — the interval no longer spans zero.
 
-**Read together, honestly:** neither test finds the deployed policy's
-realized-₹ loss against Fixed Retry to be statistically distinguishable from
-chance at this sample size (n=60). This does **not** mean the deployed
-policy is "actually fine" — it means this evaluation cannot currently
-distinguish a real regression from sampling noise, which is itself an
-honest, disclosed limitation of a n=60 synthetic held-out slice, not a
-result to lean on either way. See `tests/test_statistics.py` for the
-methodology's own test coverage (toy contingency tables, edge cases,
-reproducibility) and §19 item 2 below.
+**Read together, honestly:** with the baselines corrected, both tests now
+find the deployed policy's realized-₹ loss against Fixed Retry
+**statistically significant** at this sample size (n=60) — a materially
+different, more defensible conclusion than the previous pass's "not
+significant" finding, which rested on an understated Fixed Retry baseline.
+This still does not establish real-world production superiority of Fixed
+Retry (see the synthetic-evaluation caveat throughout this section) — only
+that, WITHIN this held-out synthetic slice, the gap is unlikely to be
+sampling noise. See `tests/test_statistics.py` and
+`tests/test_baseline_fidelity.py` for the methodology's own test coverage,
+and §19 item 1 below.
+
+**Contact / communication metrics (specification section 12, now wired
+into the report as `contact_and_intervention_metrics` / `cost_per_recovery`):**
+only Rule-Based has any communication modeled in this evaluation layer
+(Fixed Retry is silent, per spec; the other policies' real LLM-generated
+communication is the live orchestrator's own, unrelated code path).
+Rule-Based: customer-contact rate 100.0% (every retryable_soft test event
+gets the nudge), 2.0 average contacts per contacted subscription (nudge +
+follow-up, always exactly 2), total contact cost ₹16.20 (120 messages ×
+₹0.135), cost per recovery ₹0.3522. Unnecessary-intervention rate reuses
+this codebase's own existing definition (`evaluation/evaluate_counterfactual_policy.py`:
+a real action that did not result in recovery — the specification's literal
+"would have recovered under No Recovery anyway" condition has no
+counterfactual outcome row to test against in this dataset) — Fixed Retry
+15.0%, Rule-Based 23.3%, deployed policy 30.0%.
 
 **Fee economics (`policy/economics.py`, wired into the same report as
 `economics`):** the specification's "report both raw merchant GMV and
@@ -431,11 +486,16 @@ Razorpay's own public materials ("do not state a single clean UPI take-rate
 figure") — so this project applies the one verified card rate uniformly
 (effective ≈2.36% of recovered GMV, gross, i.e. fee + GST-on-the-fee) and
 documents that simplification rather than inventing a second, uncited UPI
-number. For the headline comparison, synthetic test set:
+number. Intervention cost for Fixed Retry now reflects the ACTUAL number of
+attempts made per event (1 if recovered at T+1, up to 3 otherwise — average
+1.4/event on this test set); Rule-Based's now includes its WhatsApp contact
+cost on top of its one retry attempt. For the headline comparison, synthetic
+test set:
 
 | Policy | Recovered GMV | Intervention cost | Razorpay fee take (gross) | Net recovery value |
 |---|---|---|---|---|
-| Fixed Retry | ₹21,854.10 | ₹300.00 | ₹515.76 | ₹21,038.34 |
+| Fixed Retry | ₹23,296.10 | ₹420.00 | ₹549.79 | ₹22,326.31 |
+| Rule-Based | ₹21,431.15 | ₹316.20 | ₹505.78 | ₹20,609.17 |
 | **Deployed policy (policy-v4)** | ₹19,997.23 | ₹300.00 | ₹471.93 | ₹19,225.30 |
 
 `net_recovery_value = recovered_gmv − intervention_cost − razorpay_fee_take`
@@ -511,23 +571,21 @@ pytest output as its designed function.
 "fully wired":**
 
 1. **The currently-deployed policy (policy-v4) loses to the simple Fixed
-   Retry baseline on realized ₹ recovered** (−₹1,856.87, −10 points of
-   recovery rate, n=60 test set) — the metric closest to a real outcome.
-   Model B alone beats Fixed Retry on the noise-free latent economic ground
-   truth, but the validation-tuned fallback logic wrapped around it (added
-   to guard against low-confidence predictions) trades that edge away
-   without recovering it on the realized draw. The specification's core
-   requirement — clearing all three baselines — is not currently met for
-   the deployed policy on this metric. See §16.
-2. **McNemar's test finds the deployed-vs-Fixed-Retry realized-₹ gap not
-   statistically significant at this sample size** (exact binomial p=0.146,
-   b=3, c=9, n=60 paired events; 95% bootstrap CI on the ₹ delta spans zero:
-   [−₹4,878.20, +₹1,295.62]). This is a genuine result, not an unimplemented
-   gap (`evaluation/statistics.py`, wired into `evaluate_decision_engine_v4.py`'s
-   report as `statistical_tests`) — but it cuts both ways: it means this n=60
-   synthetic evaluation cannot currently distinguish the observed loss from
-   sampling noise either. See §16.
-3. **Razorpay's fee take is modeled at one uniform rate** (`policy/economics.py`,
+   Retry baseline on realized ₹ recovered, and — now that Fixed Retry
+   faithfully represents its documented 3-day cadence — this gap is both
+   larger and statistically significant** (−₹3,298.87, −15 points of
+   recovery rate, n=60 test set; McNemar exact p=0.0117; 95% bootstrap CI
+   [−₹6,605.61, −₹47.65], excluding zero). Model B alone beats Fixed Retry
+   on the noise-free latent economic ground truth, but the validation-tuned
+   fallback logic wrapped around it (added to guard against low-confidence
+   predictions) trades that edge away without recovering it on the realized
+   draw. The specification's core requirement — clearing all three
+   baselines — is not currently met for the deployed policy on this metric,
+   and this is no longer plausibly sampling noise at this sample size. See
+   §16. This finding was NOT chased or engineered — the baseline-fidelity
+   fix that produced it was scoped only to correct Fixed Retry/Rule-Based's
+   own definitions, explicitly barred from tuning the deployed model.
+2. **Razorpay's fee take is modeled at one uniform rate** (`policy/economics.py`,
    ≈2.36% of recovered GMV, gross — the specification's disclosed "2% + 18%
    GST" domestic card rate), applied to every recovered rupee regardless of
    payment instrument. The specification itself flags UPI's exact take-rate
@@ -537,6 +595,15 @@ pytest output as its designed function.
    means the fee figures in §16/the dashboard are a documented
    simplification for non-card instruments, not a precise per-instrument
    fee model.
+3. **Fixed Retry's T+2 attempt has no simulated outcome of its own.**
+   `policy/retry_candidates.py::CANDIDATE_TYPES` (and the counterfactual
+   dataset generated against it) was never extended with a 6th "day+2"
+   candidate — doing so now would mean regenerating the synthetic dataset
+   with a new outcome definition, out of scope for the baseline-fidelity
+   fix. T+2 is genuinely scheduled (and costed) but contributes zero
+   incremental recovery probability in the evaluation's scoring — a
+   conservative simplification, disclosed here and in
+   `policy/baselines.py`'s own docstring, not an invented estimate.
 4. **The deployed model was not built the way the specification's Model 1
    describes.** The specification calls for "a calibrated binary classifier
    predicting P(recover within 14 days | ...)". The project's first
@@ -556,8 +623,11 @@ pytest output as its designed function.
    message-sending API. The dataset is archetype-generated with
    probabilistic (not deterministic) labels, by design.
 6. **Small test set (n=60 events).** Every ₹/rate gap reported against a
-   baseline in §16 is directional, synthetic-benchmark evidence, not a
-   statistically confirmed result at this sample size.
+   baseline in §16 without its own McNemar/bootstrap result (i.e. every
+   comparison other than deployed-vs-Fixed-Retry) remains directional,
+   synthetic-benchmark evidence, not a statistically confirmed result at
+   this sample size — n=60 is still small in absolute terms even where a
+   test does clear p<0.05.
 7. **`consent_for_communication` is an unimplemented placeholder** in the
    compliance gate (defaults to allowed) — there is no real consent-tracking
    system in this project.
@@ -583,8 +653,8 @@ pytest output as its designed function.
 | LLM: outreach microcopy | **DONE**, wired into the live orchestrator, including a `hard_decline` payment-method-update nudge (FIX #3) |
 | LLM: promise-to-pay parsing | **DONE** — parsed (LLM), validated (deterministic, `policy/promise_to_pay.py`), persisted (`PromiseToPay`), and capable of overriding the model's chosen retry timing through compliance in `recovery/orchestrator.py` (FIX #1). No live payment execution loop exists to observe a real fulfilled/broken outcome — see §19 item 9. |
 | LLM: batch-level report explanation | **DONE**, used by the dashboard |
-| 3 baselines (No Recovery, Fixed Retry, Rule-Based) | **PARTIAL** — implemented, but Fixed Retry simplifies Razorpay's T+3 policy to a single T+1 decision, and Rule-Based omits the spec's WhatsApp-nudge/3-day-followup behavior (no communication channel exists to implement it with). See §16. |
-| 7 evaluation metrics | **PARTIAL** — recovery rate, ₹ recovered (now split into merchant GMV / Razorpay fee take / net, `policy/economics.py`), incremental ₹, cost-per-recovery, unnecessary-intervention rate, and customer-contact rate are computed; the required McNemar's-test/bootstrap-CI significance on the headline deployed-vs-Fixed-Retry comparison (`evaluation/statistics.py`) is now also implemented. See §16. |
+| 3 baselines (No Recovery, Fixed Retry, Rule-Based) | **DONE** — Fixed Retry now schedules the spec's full T+1/T+2/T+3 "silent, same-channel, then gives up" cadence, and Rule-Based now attaches the spec's WhatsApp-nudge + 3-day-follow-up communication dimension (`policy/baselines.py`, deterministic fixed templates, no LLM). See §16, §19 item 3 for the one disclosed simplification (T+2 has no outcome data of its own). |
+| 7 evaluation metrics | **DONE** — recovery rate, ₹ recovered (split into merchant GMV / Razorpay fee take / net, `policy/economics.py`), incremental ₹, cost-per-recovery, unnecessary-intervention rate, and customer-contact rate (`evaluate_decision_engine_v4.py`'s `contact_and_intervention_metrics` / `cost_per_recovery`) are all computed on the authoritative report; McNemar's-test/bootstrap-CI significance on the headline deployed-vs-Fixed-Retry comparison (`evaluation/statistics.py`) is implemented and now finds the gap significant. See §16. |
 | Audit trail | **DONE** |
 | End-to-end automatic webhook→orchestration wiring | **DONE** (FIX #2) — a stored, verified webhook event continues automatically into classification + full orchestration in the same request; `scripts/reprocess_raw_events.py` remains available for manual re-processing of a failed/pre-fix event. |
 | Streamlit dashboard | **DONE** — 7 pages, verified via `AppTest` and direct execution, including promise-to-pay and hard-decline-communication detail |
@@ -601,10 +671,12 @@ beyond §7):
 - Set `LLM_PROVIDER=anthropic` and a real `ANTHROPIC_API_KEY` if you want
   genuinely LLM-generated (rather than deterministic mock) outreach copy,
   promise-to-pay parsing, or report narration.
-- McNemar's test, the bootstrap CI, and Razorpay fee-take modeling are now
-  implemented (§16, §19 items 2–3); a real per-instrument fee schedule (vs.
-  this project's one uniform card-rate assumption) remains a scoped,
-  understood simplification, not an unknown.
+- McNemar's test, the bootstrap CI, Razorpay fee-take modeling, and the
+  Fixed Retry/Rule-Based baseline-fidelity fix are all now implemented
+  (§16, §19 items 2–3); a real per-instrument fee schedule and a genuinely
+  simulated T+2 outcome (vs. this project's one uniform card-rate
+  assumption and T+2's zero-incremental-probability treatment) remain
+  scoped, understood simplifications, not unknowns.
 
 ---
 ## Appendix: day-by-day development log

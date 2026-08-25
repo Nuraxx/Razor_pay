@@ -108,6 +108,12 @@ class TestEvaluationIntegration:
         events = pd.DataFrame(
             {f"{name}__selected_candidate_type": (["plus_1_day_morning"] * 2 + [NO_ACTION]) for name in POLICY_NAMES}
         )
+        # BASELINE-FIDELITY FIX: fixed_retry's intervention_cost is now
+        # driven by n_attempts (1 attempt per recovered event here, 0 for
+        # the NO_ACTION event), and rule_based's by n_contacts (0 here, so
+        # its cost matches the other policies' plain per-action retry_cost).
+        events["fixed_retry__n_attempts"] = [1, 1, 0]
+        events["rule_based__n_contacts"] = [0, 0, 0]
         realized_summary = {name: {"total_recovered_rs": 100.0, "recovery_rate": 2 / 3} for name in POLICY_NAMES}
 
         economics = summarize_economics(events, realized_summary)

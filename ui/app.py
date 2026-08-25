@@ -171,6 +171,25 @@ def render_economics_section(report: dict) -> None:
     )
 
 
+def render_baseline_definitions_section(report: dict) -> None:
+    """BASELINE-FIDELITY FIX: makes the corrected Fixed Retry / Rule-Based
+    baseline definitions visible, with real numbers from the report -- never
+    fabricated. See policy/baselines.py for the implementation."""
+    b1, b2 = st.columns(2)
+    with b1:
+        st.markdown("**Fixed Retry** — silent auto-retry, same channel, no communication:")
+        st.markdown("`T+1` → `T+2` → `T+3`, then gives up")
+        attempts = ((report or {}).get("contact_and_intervention_metrics") or {}).get(BASELINE_POLICY_KEY, {}).get("average_retry_attempts")
+        if attempts is not None:
+            st.caption(f"Average {attempts:.2f} attempts/event on this held-out test set (1 if recovered at T+1, up to 3 otherwise).")
+    with b2:
+        st.markdown("**Rule-Based** — hand-coded, deterministic:")
+        st.markdown("payday-window retry + WhatsApp nudge + follow-up (+3 days), then stop")
+        rb_contact = ((report or {}).get("contact_and_intervention_metrics") or {}).get("rule_based", {})
+        if rb_contact:
+            st.caption(f"Contact rate {rb_contact.get('customer_contact_rate', 0):.0%}, {rb_contact.get('average_contacts_per_contacted_subscription', 0):.1f} contacts/contacted subscription on this held-out test set.")
+
+
 # ---------------------------------------------------------------------------
 # Page: Overview
 # ---------------------------------------------------------------------------
@@ -442,6 +461,11 @@ def page_analytics() -> None:
         render_policy_comparison_charts(report)
     else:
         empty_state("No evaluation report available.")
+
+    st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
+    st.markdown("##### Baseline definitions")
+    source_tag("synthetic")
+    render_baseline_definitions_section(report)
 
     st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
     st.markdown("##### Statistical significance — Fixed Retry vs Deployed Policy")

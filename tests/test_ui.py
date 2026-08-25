@@ -341,6 +341,25 @@ def test_render_economics_section_with_synthetic_report():
     app.render_economics_section(report)  # must not raise
 
 
+def test_render_baseline_definitions_section_handles_missing_report():
+    import ui.app as app
+
+    app.render_baseline_definitions_section(None)  # must not raise
+    app.render_baseline_definitions_section({})  # must not raise
+
+
+def test_render_baseline_definitions_section_with_synthetic_report():
+    import ui.app as app
+
+    report = {
+        "contact_and_intervention_metrics": {
+            "fixed_retry": {"average_retry_attempts": 1.4},
+            "rule_based": {"customer_contact_rate": 1.0, "average_contacts_per_contacted_subscription": 2.0},
+        }
+    }
+    app.render_baseline_definitions_section(report)  # must not raise
+
+
 # ---------------------------------------------------------------------------
 # Dynamic test count
 # ---------------------------------------------------------------------------

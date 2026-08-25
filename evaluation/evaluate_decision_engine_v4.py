@@ -31,6 +31,7 @@ Two phases, strictly ordered (brief section 2/6 -- never tune on test):
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 
 import pandas as pd
 
@@ -40,7 +41,7 @@ from model.candidate_preprocessing import split_candidate_dataset
 from model.latent_target_preprocessing import LATENT_VALUE_COLUMN, PROJECT_ROOT, build_candidate_level_dataset_with_latent_targets
 from model.train_latent_target_model import load_latent_target_model
 from policy.baselines import fixed_retry_baseline, rule_based_baseline
-from policy.costs import DEFAULT_COSTS, cost_for_candidate
+from policy.costs import DEFAULT_COSTS, contact_cost, cost_for_candidate
 from policy.decision_engine import DEFAULT_ABSTENTION_THRESHOLD_RS, NO_ACTION, decide_engine
 from policy.decision_engine_v4 import (
     DEFAULT_FALLBACK_ADVANTAGE_THRESHOLD_RS,
@@ -94,6 +95,42 @@ def _row_to_candidate(row: pd.Series) -> Candidate:
 
 def _latent_value_lookup(group: pd.DataFrame) -> dict[str, float]:
     return dict(zip(group["candidate_type"], group[LATENT_VALUE_COLUMN]))
+
+
+@dataclass(frozen=True)
+class FixedRetrySequenceOutcome:
+    recovered: bool
+    amount_recovered: float
+    n_attempts: int  # attempts actually made before stopping (recovery, or exhausting the schedule)
+
+
+def score_fixed_retry_sequence(
+    retry_schedule: list[str], realized_recovered: dict[str, bool], realized_amount: dict[str, float],
+) -> FixedRetrySequenceOutcome:
+    """
+    BASELINE-FIDELITY FIX: scores Fixed Retry's WHOLE T+1/T+2/T+3 sequence
+    (`policy/baselines.py::fixed_retry_baseline`'s `retry_schedule`) against
+    the EXISTING per-candidate counterfactual outcome dicts every other
+    policy in this script already uses -- no new outcome definition, no new
+    population. "Recovered" = ANY scheduled attempt's own outcome row
+    recovers; T+2 has no such row (see policy/baselines.py's module
+    docstring), so `realized_recovered.get(ct, False)` naturally contributes
+    False for it -- not an invented probability, just "no data, no
+    contribution." The campaign stops once recovered, so `amount_recovered`
+    and `n_attempts` are taken from the FIRST attempt (in schedule order)
+    that recovered; if none did, `n_attempts` is every attempt in the
+    schedule (the campaign ran to exhaustion, exactly per the specification's
+    "then gives up"). An empty `retry_schedule` (e.g. every attempt was
+    invalid, or the baseline returned NO_ACTION) always yields
+    `(False, 0.0, 0)` -- pure, deterministic, no side effects.
+    """
+    recovered_flags = [bool(realized_recovered.get(ct, False)) for ct in retry_schedule]
+    first_recovered_idx = next((i for i, flag in enumerate(recovered_flags) if flag), None)
+    if first_recovered_idx is not None:
+        return FixedRetrySequenceOutcome(
+            recovered=True, amount_recovered=float(realized_amount.get(retry_schedule[first_recovered_idx], 0.0)), n_attempts=first_recovered_idx + 1,
+        )
+    return FixedRetrySequenceOutcome(recovered=False, amount_recovered=0.0, n_attempts=len(retry_schedule))
 
 
 def _run_v4_for_all_events(df: pd.DataFrame, model: dict, margin_threshold: float, fallback_mode: str, fallback_advantage_threshold: float) -> pd.DataFrame:
@@ -163,8 +200,12 @@ def evaluate_events_v4(test_df: pd.DataFrame, model: dict, day10_config: dict) -
 
         record = {"event_id": event_id, "subscription_id": subscription_id, "amount": amount}
 
-        fixed_sel = fixed_retry_baseline(event_id, subscription_id, failure_timestamp, amount, classification_bucket, 0.0)["selected_candidate_type"]
-        rule_sel = rule_based_baseline(event_id, subscription_id, failure_timestamp, amount, classification_bucket, 0.0)["selected_candidate_type"]
+        fixed_result = fixed_retry_baseline(event_id, subscription_id, failure_timestamp, amount, classification_bucket, 0.0)
+        fixed_sel = fixed_result["selected_candidate_type"]
+        fixed_schedule = fixed_result["retry_schedule"]  # BASELINE-FIDELITY FIX: T+1/T+2/T+3, see policy/baselines.py
+        rule_result = rule_based_baseline(event_id, subscription_id, failure_timestamp, amount, classification_bucket, 0.0)
+        rule_sel = rule_result["selected_candidate_type"]
+        rule_communications = rule_result["communication_actions"]  # BASELINE-FIDELITY FIX: WhatsApp nudge + follow-up, see policy/baselines.py
         model_alone_decision = decide_engine(event_id, subscription_id, failure_timestamp, amount, classification_bucket, _event_context(first), costs=DEFAULT_COSTS, abstention_threshold=float("-inf"), model=model)
         day9_decision = decide_engine(event_id, subscription_id, failure_timestamp, amount, classification_bucket, _event_context(first), costs=DEFAULT_COSTS, abstention_threshold=DEFAULT_ABSTENTION_THRESHOLD_RS, model=model)
         day10_decision = decide_engine_v4(
@@ -184,9 +225,27 @@ def evaluate_events_v4(test_df: pd.DataFrame, model: dict, day10_config: dict) -
         for policy_name in POLICY_NAMES:
             selected = selections[policy_name]
             record[f"{policy_name}__selected_candidate_type"] = selected
-            record[f"{policy_name}__realized_recovered"] = bool(realized_recovered.get(selected, False)) if selected != NO_ACTION else False
-            record[f"{policy_name}__realized_amount_recovered"] = float(realized_amount.get(selected, 0.0)) if selected != NO_ACTION else 0.0
+
+            if policy_name == "fixed_retry":
+                sequence = score_fixed_retry_sequence(fixed_schedule, realized_recovered, realized_amount)
+                record[f"{policy_name}__realized_recovered"] = sequence.recovered
+                record[f"{policy_name}__realized_amount_recovered"] = sequence.amount_recovered
+                record[f"{policy_name}__n_attempts"] = sequence.n_attempts
+                record[f"{policy_name}__retry_schedule"] = fixed_schedule
+            else:
+                record[f"{policy_name}__realized_recovered"] = bool(realized_recovered.get(selected, False)) if selected != NO_ACTION else False
+                record[f"{policy_name}__realized_amount_recovered"] = float(realized_amount.get(selected, 0.0)) if selected != NO_ACTION else 0.0
+
             record[f"{policy_name}__latent_value_selected"] = float(latent_value.get(selected, 0.0)) if selected != NO_ACTION else 0.0
+
+            if policy_name == "rule_based":
+                # BASELINE-FIDELITY FIX: WhatsApp nudge + follow-up -- see
+                # policy/baselines.py. Never affects realized_recovered /
+                # realized_amount_recovered above (those remain the SAME
+                # single-candidate lookup as before this fix) -- "do not
+                # make up a recovery benefit simply because a nudge exists."
+                record[f"{policy_name}__n_contacts"] = len(rule_communications)
+                record[f"{policy_name}__contacted"] = bool(rule_communications)
 
         # Decision-trace fields (brief section 7)
         model_best_type = model_alone_decision.selected_candidate_type
@@ -262,6 +321,90 @@ def summarize_operational(events: pd.DataFrame, day10_config: dict) -> dict:
     }
 
 
+def summarize_contact_and_intervention_metrics(events: pd.DataFrame) -> dict:
+    """
+    BASELINE-FIDELITY FIX: the specification's contact/communication metrics
+    (section 12) -- customer-contact rate, average contacts per contacted
+    subscription, and unnecessary-intervention rate -- computed per policy
+    from the SAME `events` DataFrame every other summarize_* function here
+    reads, no new population.
+
+    Unnecessary-intervention definition: reuses this codebase's OWN existing
+    formula, unchanged (`evaluation/evaluate_counterfactual_policy.py`: a
+    real action selected that did not result in recovery), extended only
+    with the rate's natural denominator (# actions taken) since that script
+    reports a bare count, not a rate. The specification's literal "sent to a
+    customer who'd have recovered under No Recovery anyway" condition has no
+    counterfactual outcome row to test against in this dataset (no
+    `no_recovery` row exists in data/raw/counterfactual_outcomes.csv) -- so
+    this project's own already-established proxy is reused, not re-derived.
+
+    Only Rule-Based has any communication modeled in THIS evaluation layer
+    (Fixed Retry is silent per the specification; the other policies' real
+    LLM-generated communication is the operational orchestrator's own,
+    completely separate code path -- out of scope for this fix, never
+    touched). n_contacts / contacted default to 0 / False for every other
+    policy, so their contact-rate figures are correctly zero, not omitted.
+    """
+    n = len(events)
+    metrics = {}
+    for name in POLICY_NAMES:
+        selected = events[f"{name}__selected_candidate_type"]
+        recovered = events[f"{name}__realized_recovered"]
+        n_actions = int((selected != NO_ACTION).sum())
+        n_unnecessary = int(((selected != NO_ACTION) & (~recovered)).sum())
+
+        if f"{name}__contacted" in events.columns:
+            contacted = events[f"{name}__contacted"]
+            n_contacts = int(events[f"{name}__n_contacts"].sum())
+        else:
+            contacted = pd.Series(False, index=events.index)
+            n_contacts = 0
+        n_contacted_subscriptions = int(contacted.sum())
+
+        metrics[name] = {
+            "customer_contact_rate": round(n_contacted_subscriptions / n, 4) if n else 0.0,
+            "n_contacted_subscriptions": n_contacted_subscriptions,
+            "total_contacts": n_contacts,
+            "average_contacts_per_contacted_subscription": round(n_contacts / n_contacted_subscriptions, 4) if n_contacted_subscriptions else 0.0,
+            "n_actions_taken": n_actions,
+            "n_unnecessary_interventions": n_unnecessary,
+            "unnecessary_intervention_rate": round(n_unnecessary / n_actions, 4) if n_actions else 0.0,
+        }
+        # BASELINE-FIDELITY FIX: only fixed_retry has a real per-event
+        # attempt count (T+1/T+2/T+3 -- see score_fixed_retry_sequence);
+        # every other policy makes at most one attempt per event, so this
+        # is omitted rather than reported as a meaningless constant 1.0.
+        if f"{name}__n_attempts" in events.columns:
+            metrics[name]["average_retry_attempts"] = round(float(events[f"{name}__n_attempts"].mean()), 4) if n else 0.0
+    return metrics
+
+
+def summarize_cost_per_recovery(events: pd.DataFrame, contact_metrics: dict) -> dict:
+    """
+    Specification formula (section 12): `[Σ contact cost + Σ network/
+    compliance fees] / (# recovered)`. Network/compliance fees are ₹0 BY
+    CONSTRUCTION here -- this evaluation script never routes events through
+    the live compliance gate (policy/compliance.py) at all, matching the
+    specification's own "should be ₹0 by construction if the compliance
+    gate works" framing exactly (a non-zero value would be a bug, not
+    modeled cost). Contact cost uses policy/costs.py::contact_cost, at the
+    specification's own disclosed ₹0.135/WhatsApp-message rate -- ₹0 for
+    every policy with no communication modeled in this evaluation layer.
+    """
+    result = {}
+    for name in POLICY_NAMES:
+        n_recovered = int(events[f"{name}__realized_recovered"].sum())
+        total_contact_cost = contact_cost(contact_metrics[name]["total_contacts"], DEFAULT_COSTS)
+        result[name] = {
+            "total_contact_cost_rs": round(total_contact_cost, 2),
+            "network_compliance_fees_rs": 0.0,
+            "n_recovered": n_recovered,
+            "cost_per_recovery_rs": round(total_contact_cost / n_recovered, 4) if n_recovered else None,
+        }
+    return result
+
+
 def summarize_statistical_tests(
     events: pd.DataFrame,
     *,
@@ -321,18 +464,36 @@ def summarize_economics(events: pd.DataFrame, realized_summary: dict) -> dict:
     Adds the specification-required GMV/fee/net split (policy/economics.py)
     on top of the EXISTING `realized_summary["...']["total_recovered_rs"]`
     figure -- never recomputes recovered GMV, never blends it with the fee
-    take. `intervention_cost` is summed from the EXISTING
+    take. `intervention_cost` for most policies is summed from the EXISTING
     `policy/costs.py::cost_for_candidate` over exactly the real
     (non-NO_ACTION) actions each policy actually selected in this same test
     run -- the same cost model policy/decision_engine.py already uses at
     decision time, applied here to the REALIZED per-policy selections for a
     report-level total, not a new cost model.
+
+    BASELINE-FIDELITY FIX -- two policies now cost MORE than one retry_cost
+    per event, both using the EXISTING cost model, never a new one:
+      fixed_retry: `n_attempts` (1 if recovered at T+1, else up to 3 -- see
+        evaluate_events_v4) retry attempts were genuinely made, each priced
+        the same as any other candidate's retry (all 5 CANDIDATE_TYPES
+        already share one retry_cost, per policy/costs.py's own docstring).
+      rule_based: the WhatsApp nudge + follow-up (policy/costs.py::contact_cost)
+        is added on top of its one retry attempt's cost -- both are real
+        costs of running that policy's intervention, so both belong in the
+        SAME `intervention_cost` field (kept, not renamed -- see
+        policy/economics.py's own terminology-mapping note) rather than a
+        second, disconnected field.
     """
     economics = {}
     for name in POLICY_NAMES:
-        total_intervention_cost = float(
-            sum(cost_for_candidate(t, DEFAULT_COSTS) for t in events[f"{name}__selected_candidate_type"] if t != NO_ACTION)
-        )
+        if name == "fixed_retry":
+            total_intervention_cost = float(events["fixed_retry__n_attempts"].sum()) * (DEFAULT_COSTS.retry_cost + DEFAULT_COSTS.operational_cost)
+        else:
+            total_intervention_cost = float(
+                sum(cost_for_candidate(t, DEFAULT_COSTS) for t in events[f"{name}__selected_candidate_type"] if t != NO_ACTION)
+            )
+            if name == "rule_based":
+                total_intervention_cost += contact_cost(int(events["rule_based__n_contacts"].sum()), DEFAULT_COSTS)
         recovered_gmv = realized_summary[name]["total_recovered_rs"]
         economics[name] = compute_recovery_economics(recovered_gmv, total_intervention_cost).to_dict()
     return economics
@@ -390,6 +551,8 @@ def main() -> None:
     latent_summary = summarize_latent_economic(events)
     realized_summary = summarize_realized(events)
     operational_summary = summarize_operational(events, chosen_config)
+    contact_metrics = summarize_contact_and_intervention_metrics(events)
+    cost_per_recovery = summarize_cost_per_recovery(events, contact_metrics)
     statistical_tests = summarize_statistical_tests(events)
     economics_summary = summarize_economics(events, realized_summary)
 
@@ -399,6 +562,8 @@ def main() -> None:
         "latent_economic": latent_summary,
         "realized_counterfactual": realized_summary,
         "operational": operational_summary,
+        "contact_and_intervention_metrics": contact_metrics,
+        "cost_per_recovery": cost_per_recovery,
         "statistical_tests": statistical_tests,
         "economics": economics_summary,
     }
@@ -420,6 +585,17 @@ def main() -> None:
     print("OPERATIONAL (Day-10 decision engine only):")
     for k, v in operational_summary.items():
         print(f"  {k}: {v}")
+    print()
+    print("CONTACT / UNNECESSARY-INTERVENTION METRICS (baseline-fidelity fix):")
+    for name in POLICY_NAMES:
+        m = contact_metrics[name]
+        print(f"  {name:26s} contact_rate={m['customer_contact_rate']:.2%} avg_contacts/contacted={m['average_contacts_per_contacted_subscription']:.2f} unnecessary_rate={m['unnecessary_intervention_rate']:.2%}")
+    print()
+    print("COST PER RECOVERY (contact cost + network/compliance fees, per specification formula):")
+    for name in POLICY_NAMES:
+        c = cost_per_recovery[name]
+        cpr = f"Rs{c['cost_per_recovery_rs']:.4f}" if c["cost_per_recovery_rs"] is not None else "n/a (0 recovered)"
+        print(f"  {name:26s} contact_cost=Rs{c['total_contact_cost_rs']:.2f} n_recovered={c['n_recovered']:<3} cost_per_recovery={cpr}")
     print()
     print(f"STATISTICAL TESTS ({DEPLOYED_POLICY_NAME} vs {HEADLINE_BASELINE_NAME}, synthetic held-out test set, n={len(events)}):")
     mc = statistical_tests["mcnemar"]
