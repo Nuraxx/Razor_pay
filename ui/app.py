@@ -18,6 +18,36 @@ and a throwaway in-memory database.
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# `streamlit run ui/app.py` inserts this script's own directory (ui/) into
+# sys.path (streamlit/web/bootstrap.py::_fix_sys_path), so files under ui/
+# shadow real top-level packages that share their bare filename: ui/app.py
+# vs. the app/ package (`from app.db import Base` raises "'app' is not a
+# package"), and ui/data.py vs. the data/ namespace package (data/ has no
+# __init__.py, so a *later* sys.path entry's regular module always wins
+# over its namespace portion -- `from data.generate_synthetic_dataset
+# import ...` inside model/candidate_preprocessing.py resolves to ui/data.py
+# instead). Nothing here needs ui/ importable by bare top-level names, so
+# dropping it from sys.path (and making sure the real project root is
+# present) fixes this at the source -- must run first, before any
+# project-internal import below.
+_UI_DIR = Path(__file__).resolve().parent
+_PROJECT_ROOT = str(_UI_DIR.parent)
+
+
+def _is_ui_dir(path_entry: str) -> bool:
+    try:
+        return bool(path_entry) and Path(path_entry).resolve() == _UI_DIR
+    except OSError:
+        return False
+
+
+sys.path[:] = [p for p in sys.path if not _is_ui_dir(p)]
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 import html
 import json
 

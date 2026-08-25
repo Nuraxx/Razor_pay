@@ -49,6 +49,34 @@ def test_ui_package_imports_cleanly_in_a_fresh_process():
     assert "UI imports OK" in result.stdout
 
 
+def test_ui_app_survives_streamlits_sys_path_insertion():
+    """Regression test for the real bug this project hit: `streamlit run
+    ui/app.py` inserts this script's own directory onto sys.path
+    (streamlit/web/bootstrap.py::_fix_sys_path), and because ui/app.py and
+    ui/data.py share bare filenames with the real top-level `app` package
+    and `data` namespace package, that shadowed them --
+    "ModuleNotFoundError: No module named 'app.db'; 'app' is not a package"
+    and the equivalent for `data.generate_synthetic_dataset`. Runs in a
+    fresh process with ui/'s own directory pre-pended to sys.path, exactly
+    as Streamlit's bootstrap does, before importing ui.app -- the plain
+    `import ui.app` test above does NOT reproduce this, since it never
+    pollutes sys.path this way."""
+    import subprocess
+    import sys
+
+    project_root = Path(__file__).resolve().parent.parent
+    code = (
+        "import sys; sys.path.insert(0, 'ui'); "
+        "import runpy; runpy.run_path('ui/app.py', run_name='__main__'); "
+        "print('SCRIPT EXECUTED CLEANLY')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], cwd=str(project_root), capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, f"stdout={result.stdout}\nstderr={result.stderr}"
+    assert "SCRIPT EXECUTED CLEANLY" in result.stdout
+
+
 def test_dashboard_starts_in_mock_offline_mode():
     assert settings.LLM_PROVIDER == "mock"
     assert settings.ANTHROPIC_API_KEY == "" or settings.LLM_PROVIDER != "anthropic"
