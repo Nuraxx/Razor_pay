@@ -27,6 +27,28 @@ def test_dashboard_imports_successfully():
     import ui.app  # noqa: F401 -- must not raise
 
 
+def test_ui_package_imports_cleanly_in_a_fresh_process():
+    """Regression test for a circular-import risk: `import ui.data` must
+    never depend on `ui.components`/`ui.app` having already been imported
+    first. Runs in a genuinely fresh interpreter (this pytest process
+    already has ui.data warm in sys.modules by the time this test runs,
+    which would hide a real ordering bug)."""
+    import subprocess
+    import sys
+
+    project_root = Path(__file__).resolve().parent.parent
+    code = (
+        "import ui.data; import ui.components; import ui.app; "
+        "from ui.data import format_inr, humanize_status; "
+        "print('UI imports OK')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], cwd=str(project_root), capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, f"stdout={result.stdout}\nstderr={result.stderr}"
+    assert "UI imports OK" in result.stdout
+
+
 def test_dashboard_starts_in_mock_offline_mode():
     assert settings.LLM_PROVIDER == "mock"
     assert settings.ANTHROPIC_API_KEY == "" or settings.LLM_PROVIDER != "anthropic"
