@@ -24,7 +24,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 TaskName = Literal["outreach_microcopy", "promise_to_pay_parse", "batch_explanation"]
-Provider = Literal["mock", "anthropic"]
+Provider = Literal["mock", "anthropic", "gemini"]
 
 ALLOWED_LANGUAGES = ("en", "hi", "hinglish")
 ALLOWED_CHANNELS = ("credit_card", "debit_card", "upi_autopay", "netbanking", "unspecified")

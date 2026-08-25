@@ -21,7 +21,14 @@ from pydantic import ValidationError
 
 from app.models import AuditLog, LLMInvocation
 from classification.rules import classify
-from llm.client import AnthropicLLMClient, LLMClient, LLMProviderError, MockLLMClient, get_llm_client
+from llm.client import (
+    AnthropicLLMClient,
+    GeminiLLMClient,
+    LLMClient,
+    LLMProviderError,
+    MockLLMClient,
+    get_llm_client,
+)
 from llm.prompts import mock_response_for_prompt
 from llm.schemas import BatchExplanationOutput, LLMResult, OutreachMicrocopyOutput, PromiseToPayOutput
 from llm.service import (
@@ -322,6 +329,220 @@ class TestMockProviderAndSelection:
     def test_mock_response_for_unknown_prompt_returns_empty_json_not_an_exception(self):
         raw = mock_response_for_prompt("no task marker here")
         assert json.loads(raw) == {}
+
+
+# ---------------------------------------------------------------------------
+# Gemini provider (Day 14) -- never makes a real network call in this suite;
+# `google.genai.Client` is monkeypatched with a fake SDK client throughout.
+# ---------------------------------------------------------------------------
+
+class _FakeGeminiResponse:
+    def __init__(self, text):
+        self.text = text
+
+
+class _FakeGeminiModels:
+    def __init__(self, text=None, exc=None):
+        self._text = text
+        self._exc = exc
+        self.last_call = None
+
+    def generate_content(self, **kwargs):
+        self.last_call = kwargs
+        if self._exc is not None:
+            raise self._exc
+        return _FakeGeminiResponse(self._text)
+
+
+class _FakeGeminiSDKClient:
+    def __init__(self, api_key=None, text=None, exc=None):
+        self.models = _FakeGeminiModels(text=text, exc=exc)
+
+
+def _patch_gemini_client(monkeypatch, *, text=None, exc=None):
+    """Monkeypatches google.genai.Client so GeminiLLMClient.__init__ and
+    .complete() make ZERO real network calls -- same technique
+    TestNoSecretsInLogs below uses for anthropic.Anthropic."""
+    import google.genai as genai_module
+
+    monkeypatch.setattr(genai_module, "Client", lambda api_key=None: _FakeGeminiSDKClient(text=text, exc=exc))
+
+
+class TestGeminiProviderSelection:
+    def test_get_llm_client_gemini_without_api_key_falls_back_to_mock(self, monkeypatch):
+        monkeypatch.setattr("app.config.settings.LLM_PROVIDER", "gemini")
+        monkeypatch.setattr("app.config.settings.GEMINI_API_KEY", "")
+        client = get_llm_client()
+        assert isinstance(client, MockLLMClient)  # provider unavailable (no key) -> safe fallback, never crashes
+
+    def test_get_llm_client_gemini_with_api_key_returns_gemini_client(self, monkeypatch):
+        monkeypatch.setattr("app.config.settings.LLM_PROVIDER", "gemini")
+        monkeypatch.setattr("app.config.settings.GEMINI_API_KEY", "fake-key")
+        monkeypatch.setattr("app.config.settings.GEMINI_MODEL", "gemini-2.5-flash")
+        _patch_gemini_client(monkeypatch, text="{}")
+        client = get_llm_client()
+        assert isinstance(client, GeminiLLMClient)
+        assert client.provider_name == "gemini"
+        assert client.model_name == "gemini-2.5-flash"
+
+    def test_anthropic_selection_unaffected_by_gemini_addition(self, monkeypatch):
+        monkeypatch.setattr("app.config.settings.LLM_PROVIDER", "anthropic")
+        monkeypatch.setattr("app.config.settings.ANTHROPIC_API_KEY", "")
+        client = get_llm_client()
+        assert isinstance(client, MockLLMClient)
+
+
+class TestGeminiClient:
+    def test_initialization_sets_model_and_provider_name_no_network_call(self, monkeypatch):
+        _patch_gemini_client(monkeypatch, text="{}")
+        client = GeminiLLMClient(api_key="fake-key", model="gemini-2.5-flash")
+        assert client.provider_name == "gemini"
+        assert client.model_name == "gemini-2.5-flash"
+
+    def test_successful_text_response(self, monkeypatch):
+        good = json.dumps({"message_text": "hi", "language": "en", "failure_bucket": "x", "customer_segment": "y"})
+        _patch_gemini_client(monkeypatch, text=good)
+        client = GeminiLLMClient(api_key="fake-key")
+        out = client.complete("system prompt", "user prompt")
+        assert json.loads(out)["message_text"] == "hi"
+
+    def test_structured_output_mode_and_system_prompt_passed_through(self, monkeypatch):
+        _patch_gemini_client(monkeypatch, text="{}")
+        client = GeminiLLMClient(api_key="fake-key")
+        client.complete("system prompt text", "user prompt text")
+        config = client._client.models.last_call["config"]
+        assert config.response_mime_type == "application/json"
+        assert config.system_instruction == "system prompt text"
+
+    def test_empty_response_raises_provider_error(self, monkeypatch):
+        _patch_gemini_client(monkeypatch, text="")
+        client = GeminiLLMClient(api_key="fake-key")
+        with pytest.raises(LLMProviderError, match="gemini_empty_response"):
+            client.complete("sys", "user")
+
+    def test_authentication_failure_raises_provider_error(self, monkeypatch):
+        from google.genai import errors
+
+        _patch_gemini_client(monkeypatch, exc=errors.ClientError(401, {"error": {"message": "bad key"}}))
+        client = GeminiLLMClient(api_key="fake-key")
+        with pytest.raises(LLMProviderError, match="gemini_authentication_failed"):
+            client.complete("sys", "user")
+
+    def test_rate_limit_failure_raises_provider_error(self, monkeypatch):
+        from google.genai import errors
+
+        _patch_gemini_client(monkeypatch, exc=errors.ClientError(429, {"error": {"message": "quota"}}))
+        client = GeminiLLMClient(api_key="fake-key")
+        with pytest.raises(LLMProviderError, match="gemini_rate_limited"):
+            client.complete("sys", "user")
+
+    def test_network_failure_raises_provider_error(self, monkeypatch):
+        _patch_gemini_client(monkeypatch, exc=ConnectionError("boom"))
+        client = GeminiLLMClient(api_key="fake-key")
+        with pytest.raises(LLMProviderError, match="gemini_api_error"):
+            client.complete("sys", "user")
+
+    def test_unexpected_sdk_exception_normalized_to_provider_error(self, monkeypatch):
+        class _WeirdSDKException(Exception):
+            pass
+
+        _patch_gemini_client(monkeypatch, exc=_WeirdSDKException("boom"))
+        client = GeminiLLMClient(api_key="fake-key")
+        with pytest.raises(LLMProviderError, match="gemini_api_error"):
+            client.complete("sys", "user")
+
+    def test_authentication_failure_never_leaks_response_message(self, monkeypatch):
+        from google.genai import errors
+
+        secret_like = "sk-ant-SUPER-SECRET-GEMINI-KEY-DO-NOT-LEAK"
+        _patch_gemini_client(monkeypatch, exc=errors.ClientError(401, {"error": {"message": f"invalid key {secret_like}"}}))
+        client = GeminiLLMClient(api_key="fake-key")
+        try:
+            client.complete("sys", "user")
+            pytest.fail("expected LLMProviderError")
+        except LLMProviderError as exc:
+            assert secret_like not in str(exc)
+
+    def test_malformed_json_falls_back_through_service_layer(self, monkeypatch):
+        _patch_gemini_client(monkeypatch, text="not valid json {{{")
+        client = GeminiLLMClient(api_key="fake-key")
+        result = generate_outreach_microcopy(
+            failure_bucket="retryable_soft", customer_segment="mid", language="en", will_retry=True,
+            retry_window_description="soon", amount_rupees=100.0, client=client,
+        )
+        assert result.success is False
+        assert result.provider == "gemini"
+        assert result.error_type == "invalid_json"
+        OutreachMicrocopyOutput.model_validate(result.structured_result)  # fallback is still schema-valid
+
+    def test_schema_invalid_output_falls_back_through_service_layer(self, monkeypatch):
+        bad = json.dumps({"message_text": "hi", "language": "klingon", "failure_bucket": "x", "customer_segment": "y"})
+        _patch_gemini_client(monkeypatch, text=bad)
+        client = GeminiLLMClient(api_key="fake-key")
+        result = generate_outreach_microcopy(
+            failure_bucket="retryable_soft", customer_segment="mid", language="en", will_retry=True,
+            retry_window_description="soon", amount_rupees=100.0, client=client,
+        )
+        assert result.success is False
+        assert result.error_type == "schema_validation_error"
+
+    def test_provider_failure_falls_back_deterministically(self, monkeypatch):
+        from google.genai import errors
+
+        _patch_gemini_client(monkeypatch, exc=errors.ServerError(500, {"error": {"message": "internal"}}))
+        client = GeminiLLMClient(api_key="fake-key")
+        result = parse_promise_to_pay(customer_reply_text="I'll pay Friday", today=date(2026, 8, 24), client=client)
+        assert result.success is False
+        assert result.provider == "gemini"
+        assert result.structured_result == {"date": None, "confidence": 0.0, "channel": "unspecified"}  # same deterministic fallback as any other provider
+
+    def test_audit_record_created_with_gemini_provider(self, monkeypatch, test_db_session):
+        good = json.dumps({"message_text": "hi", "language": "en", "failure_bucket": "x", "customer_segment": "y"})
+        _patch_gemini_client(monkeypatch, text=good)
+        client = GeminiLLMClient(api_key="fake-key")
+        db = test_db_session()
+        result, invocation = generate_outreach_microcopy_and_log(
+            db, event_id=3001, failure_bucket="retryable_soft", customer_segment="mid", language="en",
+            will_retry=True, retry_window_description="soon", amount_rupees=100.0, client=client,
+        )
+        assert result.success is True
+        assert invocation.provider == "gemini"
+        audit_rows = db.query(AuditLog).filter(AuditLog.actor == "llm", AuditLog.failure_event_id == 3001).all()
+        assert len(audit_rows) == 1
+        assert "provider=gemini" in audit_rows[0].reason
+        db.close()
+
+    def test_payment_decision_identical_regardless_of_gemini_outcome(self, monkeypatch):
+        from google.genai import errors
+
+        _patch_gemini_client(monkeypatch, exc=errors.ServerError(500, {"error": {"message": "internal"}}))
+        broken_gemini_client = GeminiLLMClient(api_key="fake-key")
+
+        def _make_decision():
+            bucket = classify(None, "insufficient_fund").bucket
+
+            class _PassthroughImputer:
+                def transform(self, X):
+                    return X
+
+            class _FakeCatBoost:
+                def predict(self, X):
+                    import numpy as np
+
+                    return np.array([100.0, 90.0, 80.0, 70.0, 60.0][: len(X)])
+
+            model = {"imputer": _PassthroughImputer(), "catboost_model": _FakeCatBoost()}
+            return decide_engine_v4(6001, "sub_gemini_independence", FAILURE_TS, 1000.0, bucket, FAILURE_CONTEXT, model=model)
+
+        decision_before = _make_decision()
+
+        # Run all 3 LLM jobs against a Gemini client configured to always fail -- must have ZERO effect on the policy layer.
+        generate_outreach_microcopy(failure_bucket=decision_before.classification_bucket, customer_segment="mid", language="en", will_retry=True, retry_window_description="soon", amount_rupees=1000.0, client=broken_gemini_client)
+        parse_promise_to_pay(customer_reply_text="I'll pay Friday", today=date(2026, 8, 24), client=broken_gemini_client)
+        generate_batch_explanation(report_summary={"label": "SYNTHETIC COUNTERFACTUAL EVALUATION"}, client=broken_gemini_client)
+
+        decision_after = _make_decision()
+        assert decision_before == decision_after  # identical decision, Gemini outage had no effect whatsoever
 
 
 # ---------------------------------------------------------------------------

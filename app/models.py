@@ -199,7 +199,7 @@ class LLMInvocation(Base):
     task_name: Mapped[str] = mapped_column(String(32), index=True)
     model_name: Mapped[str] = mapped_column(String(64))
     prompt_version: Mapped[str] = mapped_column(String(32))
-    provider: Mapped[str] = mapped_column(String(16))  # "mock" | "anthropic"
+    provider: Mapped[str] = mapped_column(String(16))  # "mock" | "anthropic" | "gemini"
     success: Mapped[bool] = mapped_column(Boolean)
     structured_output: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON-serialized structured_result, or fallback result if success=False
     error_type: Mapped[str | None] = mapped_column(String(64), nullable=True)

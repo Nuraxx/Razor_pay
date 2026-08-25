@@ -1,20 +1,25 @@
 """
-Day-13 dashboard entry point -- "Adaptive Recovery: AI-assisted payment recovery".
+Day-14 dashboard entry point -- "Adaptive Recovery: AI-assisted payment
+recovery" operations console.
 
     ./venv/bin/streamlit run ui/app.py
 
 The UI sits entirely ON TOP of the existing system: it never re-implements
 classification, scoring, compliance, or LLM logic -- every page either (a)
 reads a frozen SYNTHETIC BENCHMARK evaluation report Days 6-10 already
-wrote, or (b) calls recovery/orchestrator.py::orchestrate_recovery (Day 12,
-unmodified) to produce OPERATIONAL DEMO DATA. See ui/data.py's module
-docstring for that distinction, which is never blurred anywhere below.
+wrote, (b) queries the REAL, webhook-backed SQLite database
+(settings.DATABASE_URL) read-only for LIVE operational data, or (c) calls
+recovery/orchestrator.py::orchestrate_recovery (Day 12, unmodified) against
+a throwaway in-memory DB to produce DEMO-GENERATED data for the interactive
+demo. See ui/data.py's module docstring for the full three-way distinction,
+which is never blurred anywhere below -- every section on this page carries
+an explicit LIVE / DEMO-GENERATED / SYNTHETIC BENCHMARK tag.
 
 No ML model is trained here, Day-8 Model B is used exactly as trained,
 Day-10 policy / Day-12 compliance logic is unmodified, and the three Day-11
 LLM jobs are unmodified. No live Razorpay payment or real customer message
-is ever sent -- this entire app runs offline against the mock LLM provider
-and a throwaway in-memory database.
+is ever sent from this UI -- it only ever READS the database a real
+webhook delivery (via app/main.py, unmodified) may have already written.
 """
 from __future__ import annotations
 
@@ -50,6 +55,7 @@ if _PROJECT_ROOT not in sys.path:
 
 import html
 import json
+from datetime import datetime
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -58,37 +64,75 @@ import streamlit as st
 import ui.data as data
 from ui.components import (
     empty_state,
+    field_group,
+    field_row,
     inject_css,
     kpi_card,
+    live_indicator,
+    mono,
     money,
     render_status_badge,
     section_header,
     sidebar_brand,
+    sidebar_status_block,
     source_tag,
-    status_badge,
     timeline_step,
+    top_bar,
 )
 
 st.set_page_config(page_title="Adaptive Recovery", page_icon="💳", layout="wide")
 
+LIVE_REFRESH_SECONDS = 5  # Part 10/11/31: smallest reasonable live-fragment boundary
+
 NAV_PAGES = ["Overview", "Recovery Queue", "Payment Events", "Analytics", "Communications", "Audit Log", "System / Demo"]
 NAV_ICONS = {
-    "Overview": "📊", "Recovery Queue": "📋", "Payment Events": "💳", "Analytics": "📈",
-    "Communications": "✉️", "Audit Log": "🧾", "System / Demo": "⚙️",
+    "Overview": "", "Recovery Queue": "", "Payment Events": "", "Analytics": "",
+    "Communications": "", "Audit Log": "", "System / Demo": "",
 }
 POLICY_LABELS = {
     "fixed_retry": "Fixed Retry", "rule_based": "Rule-Based", "day8_model_b_alone": "Day-8 Model B",
     "day9_original_fallback": "Day-9 Policy", "day10_improved_fallback": "Day-10 Policy", "oracle_policy": "Oracle",
 }
-# FIX pass: the one headline baseline comparison the statistical-significance
-# and economics sections below focus on (matches
+# The one headline baseline comparison the statistical-significance and
+# economics sections focus on (matches
 # evaluation/evaluate_decision_engine_v4.py's DEPLOYED_POLICY_NAME / HEADLINE_BASELINE_NAME).
 DEPLOYED_POLICY_KEY = "day10_improved_fallback"
 BASELINE_POLICY_KEY = "fixed_retry"
 
 
 # ---------------------------------------------------------------------------
-# Shared: policy comparison charts (used by Overview + Analytics)
+# Live-fragment bookkeeping (Part 11): every live section shares this
+# tiny helper so its refresh pill reflects a REAL just-performed query,
+# never an assumed-fresh state.
+# ---------------------------------------------------------------------------
+
+def _run_live(section_key: str, fn, *args, **kwargs):
+    """Runs fn, records success/failure + timestamp in session_state for
+    _render_live_pill, and NEVER lets a live-query exception escape into
+    the page (Part 22: a failed live query must show a compact status, not
+    crash the dashboard)."""
+    now = datetime.now()
+    try:
+        result = fn(*args, **kwargs)
+        st.session_state[f"_live_{section_key}"] = {"ok": True, "at": now, "error": None}
+        return result
+    except Exception as exc:  # noqa: BLE001 -- a live UI query must never propagate into a crashed page
+        st.session_state[f"_live_{section_key}"] = {"ok": False, "at": now, "error": str(exc)}
+        return None
+
+
+def _render_live_pill(section_key: str) -> None:
+    state = st.session_state.get(f"_live_{section_key}", {"ok": True, "at": None, "error": None})
+    st.markdown(
+        live_indicator(connected=state["ok"], last_refresh=state["at"], error=state["error"]),
+        unsafe_allow_html=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Shared: policy comparison charts (SYNTHETIC BENCHMARK only -- used by
+# Overview + Analytics). UNCHANGED from the prior evaluation-fidelity pass:
+# reads the frozen report, never recomputes a number.
 # ---------------------------------------------------------------------------
 
 def render_policy_comparison_charts(report: dict) -> None:
@@ -97,18 +141,18 @@ def render_policy_comparison_charts(report: dict) -> None:
     policies = [p for p in POLICY_LABELS if p in latent]
     labels = [POLICY_LABELS[p] for p in policies]
 
-    col1, col2 = st.columns(2)
+    col1, col2 = st.columns(2, gap="small")
     with col1:
         st.markdown("**Latent expected value — synthetic benchmark**")
         values = [latent[p]["total_latent_value_rs"] for p in policies]
         fig = go.Figure(go.Bar(x=labels, y=values, marker_color="#2F4CDD", text=[f"₹{v:,.0f}" for v in values], textposition="outside"))
-        fig.update_layout(height=340, margin=dict(l=10, r=10, t=10, b=10), plot_bgcolor="white", paper_bgcolor="white", yaxis_title="₹ (latent, test set)")
+        fig.update_layout(height=240, margin=dict(l=10, r=10, t=10, b=10), plot_bgcolor="white", paper_bgcolor="white", yaxis_title="₹ (latent, test set)")
         st.plotly_chart(fig, width='stretch')
     with col2:
         st.markdown("**Realized counterfactual recovery — synthetic benchmark**")
         values = [realized[p]["total_recovered_rs"] for p in policies]
         fig = go.Figure(go.Bar(x=labels, y=values, marker_color="#1D9A6C", text=[f"₹{v:,.0f}" for v in values], textposition="outside"))
-        fig.update_layout(height=340, margin=dict(l=10, r=10, t=10, b=10), plot_bgcolor="white", paper_bgcolor="white", yaxis_title="₹ (realized, test set)")
+        fig.update_layout(height=240, margin=dict(l=10, r=10, t=10, b=10), plot_bgcolor="white", paper_bgcolor="white", yaxis_title="₹ (realized, test set)")
         st.plotly_chart(fig, width='stretch')
 
     st.caption(
@@ -119,16 +163,11 @@ def render_policy_comparison_charts(report: dict) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Statistical significance + economics (FIX pass) -- used by Analytics
-# ---------------------------------------------------------------------------
-
 def render_statistical_significance_section(report: dict) -> None:
     """Shows the McNemar's-test / bootstrap-CI results
     `evaluate_decision_engine_v4.py::summarize_statistical_tests` already
     computed and wrote into the report -- never recomputed here, and never
-    hidden if the result is negative (deployed policy currently loses to
-    Fixed Retry on realized ₹ -- see README §16/§19)."""
+    hidden if the result is negative. UNCHANGED evaluation methodology."""
     stats = (report or {}).get("statistical_tests") or {}
     mc = stats.get("mcnemar")
     bs = stats.get("bootstrap_ci")
@@ -143,7 +182,7 @@ def render_statistical_significance_section(report: dict) -> None:
     rate_delta_pp = (deployed.get("recovery_rate", 0.0) - baseline.get("recovery_rate", 0.0)) * 100
     rs_delta = deployed.get("incremental_rs_vs_fixed_retry", bs["point_estimate"])
 
-    cols = st.columns(4)
+    cols = st.columns(4, gap="small")
     with cols[0]:
         kpi_card("Recovery-rate delta", f"{rate_delta_pp:+.1f} pp", f"{POLICY_LABELS.get(DEPLOYED_POLICY_KEY, DEPLOYED_POLICY_KEY)} vs Fixed Retry")
     with cols[1]:
@@ -170,7 +209,8 @@ def render_statistical_significance_section(report: dict) -> None:
 def render_economics_section(report: dict) -> None:
     """Merchant-recovered GMV, this project's own intervention cost, and
     Razorpay's disclosed fee take, kept as separate fields per the
-    specification -- never blended into one number (policy/economics.py)."""
+    specification -- never blended into one number (policy/economics.py).
+    UNCHANGED evaluation methodology."""
     if not report or "economics" not in report:
         empty_state("No economics data available — run evaluation/evaluate_decision_engine_v4.py to generate it.")
         return
@@ -180,7 +220,7 @@ def render_economics_section(report: dict) -> None:
     baseline = econ.get(BASELINE_POLICY_KEY, {})
 
     st.caption(f"Deployed policy ({POLICY_LABELS.get(DEPLOYED_POLICY_KEY, DEPLOYED_POLICY_KEY)}), synthetic held-out test set:")
-    cols = st.columns(4)
+    cols = st.columns(4, gap="small")
     with cols[0]:
         kpi_card("Merchant Recovery", money(deployed.get("recovered_gmv")), "recovered GMV")
     with cols[1]:
@@ -202,10 +242,9 @@ def render_economics_section(report: dict) -> None:
 
 
 def render_baseline_definitions_section(report: dict) -> None:
-    """BASELINE-FIDELITY FIX: makes the corrected Fixed Retry / Rule-Based
-    baseline definitions visible, with real numbers from the report -- never
-    fabricated. See policy/baselines.py for the implementation."""
-    b1, b2 = st.columns(2)
+    """Makes the Fixed Retry / Rule-Based baseline definitions visible, with
+    real numbers from the report -- never fabricated. UNCHANGED."""
+    b1, b2 = st.columns(2, gap="small")
     with b1:
         st.markdown("**Fixed Retry** — silent auto-retry, same channel, no communication:")
         st.markdown("`T+1` → `T+2` → `T+3`, then gives up")
@@ -224,52 +263,58 @@ def render_baseline_definitions_section(report: dict) -> None:
 # Page: Overview
 # ---------------------------------------------------------------------------
 
+@st.fragment(run_every=f"{LIVE_REFRESH_SECONDS}s")
+def _overview_live_fragment() -> None:
+    source_tag("live")
+    _render_live_pill("overview")
+    kpis = _run_live("overview", data.get_live_kpis) or {}
+
+    cols = st.columns(5, gap="small")
+    with cols[0]:
+        kpi_card("Failed payments", str(kpis.get("failed_payments", 0)), "raw_events, all-time")
+    with cols[1]:
+        kpi_card("Policy decisions", str(kpis.get("policy_decisions", 0)), "Subscriptions-only scope")
+    with cols[2]:
+        kpi_card("Retry actions", str(kpis.get("retry_actions", 0)), "selected candidate ≠ NO_ACTION")
+    with cols[3]:
+        kpi_card("No action", str(kpis.get("no_action", 0)), "policy chose NO_ACTION")
+    with cols[4]:
+        kpi_card("Received, not orchestrated", str(kpis.get("received_not_orchestrated", 0)), "e.g. no subscription_id")
+
+    st.markdown("<div style='height:0.3rem'></div>", unsafe_allow_html=True)
+    st.markdown("###### Recent payment events")
+    events_df = data.get_live_raw_events_df(limit=25)
+    if events_df.empty:
+        empty_state("No live webhook events received yet. Send a test Razorpay payment.failed webhook to see it appear here automatically.")
+        return
+
+    table = pd.DataFrame(
+        {
+            "Time": events_df["received_at"].map(data.format_ts),
+            "Payment ID": events_df["payment_id"],
+            "Event": events_df["event_type"],
+            "Amount": events_df["amount_rupees"].map(money),
+            "Failure reason": events_df["error_reason"].fillna("—"),
+            "Subscription": events_df["subscription_id"].fillna("—"),
+        }
+    )
+    st.dataframe(table, width='stretch', height=300, hide_index=True)
+    st.caption(
+        "Recovery Queue shows the classification/policy/compliance outcome for events that had a "
+        "subscription_id and could be orchestrated (Recovery Queue page)."
+    )
+
+
 def page_overview() -> None:
-    section_header("Recovery Overview", "Monitor failed payments, recovery decisions and expected recovered value.")
+    section_header("Recovery Overview", "Live payment-recovery operations and synthetic benchmark performance, kept strictly separate.")
 
+    st.markdown("##### Live operations")
+    _overview_live_fragment()
+
+    st.markdown("<div style='height:0.45rem'></div>", unsafe_allow_html=True)
+    st.markdown("##### Synthetic benchmark — money recovery by policy")
+    source_tag("synthetic")
     report = data.load_report("decision_engine_v4_evaluation.json")
-    db, queue_df = data.build_demo_database()
-
-    st.markdown("##### Failed payments & recovery outcomes")
-    row1 = st.columns(3)
-    row2 = st.columns(3)
-
-    with row1[0]:
-        source_tag("operational")
-        kpi_card("Failed payments", str(len(queue_df)) if not queue_df.empty else "0", "Events processed by the live orchestrator (demo sample)")
-    with row1[1]:
-        source_tag("synthetic")
-        if report:
-            rate = report["realized_counterfactual"]["day10_improved_fallback"]["recovery_rate"]
-            kpi_card("Recovery rate", f"{rate * 100:.1f}%", "Day-10 policy, held-out test set")
-        else:
-            kpi_card("Recovery rate", "—", "No evaluation report available")
-    with row1[2]:
-        source_tag("synthetic")
-        if report:
-            val = report["latent_economic"]["day10_improved_fallback"]["total_latent_value_rs"]
-            kpi_card("Expected recovery value", money(val), "Latent, Day-10 policy, test set")
-        else:
-            kpi_card("Expected recovery value", "—", "No evaluation report available")
-
-    with row2[0]:
-        source_tag("synthetic")
-        if report:
-            val = report["realized_counterfactual"]["day10_improved_fallback"]["total_recovered_rs"]
-            kpi_card("Amount recovered", money(val), "Realized, Day-10 policy, test set")
-        else:
-            kpi_card("Amount recovered", "—", "No evaluation report available")
-    with row2[1]:
-        source_tag("operational")
-        n_retry = int((queue_df["payment_action"] == "retry_scheduled").sum()) if not queue_df.empty else 0
-        kpi_card("Retry actions selected", str(n_retry), "Live orchestrator run (demo sample)")
-    with row2[2]:
-        source_tag("operational")
-        n_blocked = int((queue_df["payment_action"] == "no_action").sum()) if not queue_df.empty else 0
-        kpi_card("NO_ACTION / blocked events", str(n_blocked), "Live orchestrator run (demo sample)")
-
-    st.markdown("<div style='height:1.4rem'></div>", unsafe_allow_html=True)
-    st.markdown("##### Money recovery by policy")
     if report:
         render_policy_comparison_charts(report)
     else:
@@ -277,333 +322,361 @@ def page_overview() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Page: Recovery Queue (+ inline event detail / candidate visualization)
+# Page: Recovery Queue -- LIVE database
 # ---------------------------------------------------------------------------
 
-def page_recovery_queue() -> None:
-    section_header("Recovery Queue", "Every failure event the orchestrator has processed, and the action selected for it.")
-    source_tag("operational")
-
-    db, queue_df = data.build_demo_database()
-    if queue_df.empty:
-        empty_state("No events available — data/raw/failure_events.csv or subscriptions.csv could not be loaded.")
-        return
-
-    display_df = queue_df.copy()
-    display_df["Amount"] = display_df["event_id"].map(lambda _: None)
-    events_raw = data.load_csv("failure_events.csv")
-    amount_by_event = events_raw.set_index("event_id")["amount"].to_dict() if events_raw is not None else {}
-    reason_by_event = events_raw.set_index("event_id")["error_reason"].to_dict() if events_raw is not None else {}
-
-    table = pd.DataFrame({
-        "Event ID": display_df["event_id"],
-        "Subscription": display_df["subscription_id"],
-        "Amount": display_df["event_id"].map(lambda e: money(amount_by_event.get(e))),
-        "Failure reason": display_df["event_id"].map(lambda e: reason_by_event.get(e, "—")),
-        "Classification": display_df["classification_bucket"],
-        "Selected retry": display_df["selected_candidate_type"],
-        "Expected recovery ₹": display_df["expected_recovery_value"].map(money),
-        "Communication": display_df["communication_action"],
-        "Promise-to-pay": display_df["promise_applied"].map(lambda v: "Applied" if v else "—"),
-        "Final status": display_df["final_status"],
-    })
-
-    st.caption(f"{len(table)} events in this demo run.")
-    event = st.dataframe(
-        table, width='stretch', height=420, hide_index=True,
-        on_select="rerun", selection_mode="single-row", key="recovery_queue_table",
-    )
-
-    selected_rows = event.selection.rows if event and event.selection else []
-    if not selected_rows:
-        empty_state("Select a row above to see its full decision timeline and candidate scoring.")
-        return
-
-    selected_event_id = table.iloc[selected_rows[0]]["Event ID"]
-    render_event_detail(db, selected_event_id)
-
-
-def render_event_detail(db, event_id) -> None:
-    detail = data.get_event_detail(db, event_id)
+def render_live_event_detail(event_id) -> None:
+    detail = data.get_live_event_detail(event_id)
     if detail is None:
         empty_state("No detail available for this event.")
         return
 
-    policy_row = detail["policy"]
-    llm_rows = detail["llm"]
-    promise_rows = detail["promises"]
-    active_promise = next((p for p in reversed(promise_rows) if p.status == "VALID" or p.override_applied), promise_rows[-1] if promise_rows else None)
+    policy_row, failure_row, raw_row = detail["policy"], detail["failure"], detail["raw"]
+    audit_rows, llm_rows = detail["audit"], detail["llm"]
 
-    message_text = None
-    if llm_rows:
-        try:
-            message_text = json.loads(llm_rows[-1].structured_output or "{}").get("message_text")
-        except ValueError:
-            message_text = None
+    st.markdown("<div style='height:0.3rem'></div>", unsafe_allow_html=True)
+    st.markdown(f"#### Event detail — {mono(event_id)}", unsafe_allow_html=True)
 
-    st.markdown("<div style='height:0.8rem'></div>", unsafe_allow_html=True)
-    st.markdown(f"#### Event detail — {html.escape(str(event_id))}")
-
-    col1, col2 = st.columns([2, 1])
+    col1, col2 = st.columns(2, gap="small")
     with col1:
-        steps = [
-            ("Failure received", f"subscription={policy_row.subscription_id}, event_id={event_id}"),
-            ("Failure classification", f"<code>{html.escape(policy_row.classification_bucket or '—')}</code>"),
-            ("Policy decision", f"selected <code>{html.escape(policy_row.selected_candidate_type)}</code> via <code>{html.escape(policy_row.decision_source or '—')}</code> (policy_version={policy_row.policy_version})"),
-            ("Candidate retry scoring", html.escape(policy_row.decision_reason or "—")),
-            ("Compliance check", f"intervention_cost={money(policy_row.intervention_cost)}, decision_margin={policy_row.decision_margin}"),
-            ("Payment action", "retry_scheduled" if policy_row.selected_candidate_type != "NO_ACTION" else "no_action"),
-            (
-                "Communication action",
-                (f"{llm_rows[-1].task_name}: {'sent' if llm_rows[-1].success else 'fallback_used'}" if llm_rows else "skipped")
-                + (f'<br><span class="ar-subtext">{html.escape(message_text)}</span>' if message_text else ""),
-            ),
-            ("Final result", "see badge →"),
-        ]
-        for i, (title, body) in enumerate(steps, start=1):
-            timeline_step(i, title, body)
+        field_group("Event")
+        field_row("Payment ID", raw_row.payment_id if raw_row else None, mono=True)
+        field_row("Order ID", raw_row.order_id if raw_row else None, mono=True)
+        field_row("Subscription ID", policy_row.subscription_id, mono=True)
+        field_row("Amount", money((raw_row.amount or 0) / 100.0) if raw_row else None)
+        field_row("Currency", raw_row.currency if raw_row else None)
+        field_row("Received", data.format_ts(raw_row.received_at) if raw_row else None)
 
-        if active_promise is not None:
-            st.markdown("<div style='height:0.6rem'></div>", unsafe_allow_html=True)
-            st.markdown("##### Promise-to-pay")
-            pp1, pp2, pp3, pp4 = st.columns(4)
-            with pp1:
-                st.markdown("**Promised date**")
-                st.write(active_promise.promised_date.date().isoformat() if active_promise.promised_date else "—")
-            with pp2:
-                st.markdown("**Confidence**")
-                st.write(f"{active_promise.confidence:.2f}")
-            with pp3:
-                st.markdown("**Channel**")
-                st.write(active_promise.channel)
-            with pp4:
-                st.markdown("**Status**")
-                render_status_badge(active_promise.status)
-            st.markdown(
-                f"**Override applied:** {'Yes' if active_promise.override_applied else 'No'}"
-                + (f" ({active_promise.override_outcome})" if active_promise.override_outcome else "")
-                + f"  \n**Original candidate:** `{policy_row.selected_candidate_type}`"
-                + f"  \n**Final candidate:** `{'promise_to_pay' if active_promise.override_applied else policy_row.selected_candidate_type}`"
-            )
+        field_group("Failure")
+        field_row("Error code", raw_row.error_code if raw_row else None)
+        field_row("Reason", raw_row.error_reason if raw_row else None)
+        field_row("Source", raw_row.error_source if raw_row else None)
+        field_row("Step", raw_row.error_step if raw_row else None)
+        field_row("Description", raw_row.error_description if raw_row else None)
+
+        field_group("Classification")
+        field_row("Bucket", failure_row.classification_bucket if failure_row else None)
+        field_row("Confidence", f"{failure_row.classification_confidence:.2f}" if failure_row and failure_row.classification_confidence is not None else None)
+        field_row("Rule version", failure_row.rule_version if failure_row else None)
+
     with col2:
-        st.markdown("**Classification**")
-        st.write(policy_row.classification_bucket)
-        st.markdown("**Policy**")
-        st.write(policy_row.selected_candidate_type)
-        st.markdown("**Expected value**")
-        st.write(money(policy_row.expected_recovery_value))
-        st.markdown("**Compliance**")
-        render_status_badge("ALLOWED" if policy_row.selected_candidate_type != "NO_ACTION" else "BLOCKED")
-        st.markdown("**Communication**")
-        if llm_rows:
-            render_status_badge("SENT" if llm_rows[-1].success else "FALLBACK_USED")
+        field_group("Policy")
+        field_row("Candidate", policy_row.selected_candidate_type)
+        field_row("Candidate time", data.format_ts(policy_row.selected_candidate_datetime))
+        field_row("Decision source", policy_row.decision_source)
+        field_row("Policy version", policy_row.policy_version)
+        field_row("Decision reason", policy_row.decision_reason)
+
+        compliance_audit = next((a for a in reversed(audit_rows) if a.action == "orchestrator_compliance"), None)
+        compliance_fields = data.extract_compliance_fields(compliance_audit.reason if compliance_audit else None)
+        field_group("Compliance")
+        field_row("Payment allowed", compliance_fields.get("payment_allowed"))
+        field_row("Communication allowed", compliance_fields.get("communication_allowed"))
+        field_row("Rule version", compliance_fields.get("rule_version"))
+        field_row("Reason", compliance_fields.get("payment_reason") or compliance_fields.get("communication_reason"))
+
+        comm = llm_rows[-1] if llm_rows else None
+        field_group("Actions")
+        field_row("Payment action", "no_action" if policy_row.selected_candidate_type == "NO_ACTION" else "retry_scheduled")
+        field_row("Communication action", ("sent" if comm.success else "fallback_used") if comm else "—")
+        field_row("LLM success", ("Yes" if comm.success else "No") if comm else "—")
+
+    st.markdown("<div style='height:0.3rem'></div>", unsafe_allow_html=True)
+    field_group("Audit trail")
+    if not audit_rows:
+        empty_state("No audit rows for this event.")
+    for i, row in enumerate(audit_rows, start=1):
+        timeline_step(i, f"{row.actor} — {row.action}", html.escape(row.reason or "—"))
+
+
+@st.fragment(run_every=f"{LIVE_REFRESH_SECONDS}s")
+def _recovery_queue_fragment() -> None:
+    source_tag("live")
+    _render_live_pill("recovery_queue")
+    df = _run_live("recovery_queue", data.get_live_recovery_queue_df, limit=200)
+
+    if df is None or df.empty:
+        empty_state(
+            "No live recovery decisions yet. Events without a subscription_id (e.g. a generic Payment Link "
+            "failure) are never orchestrated into a policy decision — see \"Received, not orchestrated\" below."
+        )
+    else:
+        table = pd.DataFrame(
+            {
+                "Event ID": df["event_id"],
+                "Payment ID": df["payment_id"],
+                "Subscription": df["subscription_id"].fillna("—"),
+                "Amount": df["amount_rupees"].map(money),
+                "Failure reason": df["error_reason"].fillna("—"),
+                "Classification": df["classification_bucket"],
+                "Recommended retry": df["selected_candidate_type"],
+                "Retry time": df["selected_candidate_datetime"].map(data.format_ts),
+                "Communication": df["communication_action"],
+                "Final status": df["final_status"],
+                "Updated": df["decided_at"].map(data.format_ts),
+            }
+        )
+        st.caption(f"{len(table)} live decisions.")
+        event = st.dataframe(
+            table, width='stretch', height=380, hide_index=True,
+            on_select="rerun", selection_mode="single-row", key="live_recovery_queue_table",
+        )
+        selected_rows = event.selection.rows if event and event.selection else []
+        if selected_rows:
+            render_live_event_detail(table.iloc[selected_rows[0]]["Event ID"])
         else:
-            render_status_badge("SKIPPED")
+            empty_state("Select a row above to see its full decision detail.")
 
-    render_candidate_visualization(event_id)
+    st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
+    unrouted = _run_live("recovery_queue_unrouted", data.get_live_unrouted_raw_events_df, limit=25)
+    if unrouted is not None and not unrouted.empty:
+        st.markdown("###### Received, not orchestrated")
+        st.caption("Stored webhook deliveries that never reached classification/policy at all — with the real reason why.")
+        table2 = pd.DataFrame(
+            {
+                "Raw event ID": unrouted["id"],
+                "Received": unrouted["received_at"].map(data.format_ts),
+                "Payment ID": unrouted["payment_id"],
+                "Amount": unrouted["amount_rupees"].map(money),
+                "Error reason": unrouted["error_reason"].fillna("—"),
+                "Reason not orchestrated": unrouted["reason_not_orchestrated"],
+            }
+        )
+        st.dataframe(table2, width='stretch', hide_index=True)
 
 
-def render_candidate_visualization(event_id) -> None:
-    st.markdown("<div style='height:0.6rem'></div>", unsafe_allow_html=True)
-    st.markdown("##### Retry-candidate scoring")
-    source_tag("synthetic")
+def page_recovery_queue() -> None:
+    section_header("Recovery Queue", "Every failure event the recovery pipeline has decided on, read live from the database.")
+    _recovery_queue_fragment()
 
-    events = data.load_csv("failure_events.csv")
-    subs = data.load_csv("subscriptions.csv")
-    if events is None or subs is None:
-        empty_state("Raw event/subscription data not available for candidate scoring.")
+
+# ---------------------------------------------------------------------------
+# Page: Payment Events -- LIVE raw_events explorer
+# ---------------------------------------------------------------------------
+
+@st.fragment(run_every=f"{LIVE_REFRESH_SECONDS}s")
+def _payment_events_fragment() -> None:
+    source_tag("live")
+    _render_live_pill("payment_events")
+    df = _run_live("payment_events", data.get_live_raw_events_df, limit=300)
+
+    if df is None or df.empty:
+        empty_state("No webhook deliveries stored yet.")
         return
-    row = events[events["event_id"] == event_id]
-    if row.empty:
-        empty_state("This event isn't present in data/raw/failure_events.csv (may be an interactive demo event).")
-        return
-    row = row.iloc[0]
-    sub_row = subs.set_index("subscription_id").loc[row["subscription_id"]]
-    model = data._try_load_model()
-    breakdown = data.get_candidate_breakdown(row, sub_row, model)
 
-    cand_df = pd.DataFrame(breakdown["candidates"])
-    cand_df["Candidate"] = cand_df["candidate_type"]
-    cand_df["Predicted recovery ₹"] = cand_df["predicted_recovery_value"].map(money)
-    cand_df["Intervention cost ₹"] = cand_df["intervention_cost"].map(money)
-    cand_df["Expected net ₹"] = cand_df["expected_net_value"].map(money)
-    cand_df["Valid"] = cand_df["valid"].map(lambda v: "Yes" if v else "No")
-    cand_df["Selected"] = cand_df["is_selected"].map(lambda v: "✓" if v else "")
+    with st.expander("Filters", expanded=False):
+        c1, c2, c3 = st.columns(3, gap="small")
+        with c1:
+            event_types = sorted(df["event_type"].dropna().unique().tolist())
+            chosen_types = st.multiselect("Event type", event_types, default=event_types, key="pe_filter_event_type")
+        with c2:
+            reasons = sorted(df["error_reason"].dropna().unique().tolist())
+            chosen_reasons = st.multiselect("Failure reason", reasons, default=reasons, key="pe_filter_reason")
+        with c3:
+            payment_id_filter = st.text_input("Payment ID contains", key="pe_filter_payment_id")
 
-    st.dataframe(
-        cand_df[["Candidate", "Predicted recovery ₹", "Intervention cost ₹", "Expected net ₹", "Valid", "Selected"]],
-        width='stretch', hide_index=True,
+    filtered = df[df["event_type"].isin(chosen_types)]
+    if chosen_reasons:
+        filtered = filtered[filtered["error_reason"].isin(chosen_reasons) | filtered["error_reason"].isna()]
+    if payment_id_filter:
+        filtered = filtered[filtered["payment_id"].fillna("").str.contains(payment_id_filter, case=False)]
+
+    table = pd.DataFrame(
+        {
+            "Timestamp": filtered["received_at"].map(data.format_ts),
+            "Razorpay Event ID": filtered["razorpay_event_id"],
+            "Payment ID": filtered["payment_id"],
+            "Order ID": filtered["order_id"],
+            "Subscription ID": filtered["subscription_id"].fillna("—"),
+            "Amount": filtered["amount_rupees"].map(money),
+            "Currency": filtered["currency"],
+            "Error Code": filtered["error_code"].fillna("—"),
+            "Error Reason": filtered["error_reason"].fillna("—"),
+            "Signature Verified": filtered["signature_verified"].map(lambda v: "Yes" if v else "No"),
+        }
     )
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.markdown(f"**Model selected:** `{breakdown['selected']}`")
-    with c2:
-        st.markdown(f"**Rule-based selected:** `{breakdown['rule_pick']}`")
-    with c3:
-        st.markdown(f"**Oracle selected:** `{breakdown['oracle_pick'] or '—'}`")
+    st.caption(f"Showing {len(table)} of {len(df)} stored raw events.")
+    event = st.dataframe(
+        table, width='stretch', height=420, hide_index=True,
+        on_select="rerun", selection_mode="single-row", key="live_raw_events_table",
+    )
+    selected_rows = event.selection.rows if event and event.selection else []
+    if not selected_rows:
+        return
 
+    selected_id = filtered.iloc[selected_rows[0]]["id"]
+    row = filtered[filtered["id"] == selected_id].iloc[0]
+    st.markdown("<div style='height:0.25rem'></div>", unsafe_allow_html=True)
+    st.markdown("###### Parsed event detail")
+    d1, d2, d3 = st.columns(3, gap="small")
+    with d1:
+        field_group("Event")
+        field_row("Payment ID", row["payment_id"], mono=True)
+        field_row("Order ID", row["order_id"], mono=True)
+        field_row("Amount", money(row["amount_rupees"]))
+    with d2:
+        field_group("Failure")
+        field_row("Error code", row["error_code"])
+        field_row("Reason", row["error_reason"])
+        field_row("Source", row["error_source"])
+        field_row("Step", row["error_step"])
+    with d3:
+        field_group("Delivery")
+        field_row("Received", data.format_ts(row["received_at"]))
+        field_row("Signature verified", "Yes" if row["signature_verified"] else "No")
+        field_row("Subscription ID", row["subscription_id"], mono=True)
 
-# ---------------------------------------------------------------------------
-# Page: Payment Events (raw generated dataset browser)
-# ---------------------------------------------------------------------------
+    with st.expander("Raw webhook payload (as stored — never includes the webhook secret or API keys)"):
+        try:
+            st.code(json.dumps(json.loads(row["raw_payload"] or "{}"), indent=2), language="json")
+        except ValueError:
+            st.code(row["raw_payload"] or "—")
+
 
 def page_payment_events() -> None:
-    section_header("Payment Events", "The raw generated failure-event dataset this project's synthetic simulation produced.")
-    source_tag("synthetic")
+    section_header("Payment Events", "The real raw_events table this project's FastAPI webhook handler writes to.")
+    _payment_events_fragment()
 
-    events = data.load_csv("failure_events.csv")
-    subs = data.load_csv("subscriptions.csv")
-    if events is None:
-        empty_state("data/raw/failure_events.csv not found.")
+
+# ---------------------------------------------------------------------------
+# Page: Analytics -- Live Operations tab + Model / Policy Evaluation tab
+# ---------------------------------------------------------------------------
+
+@st.fragment(run_every=f"{LIVE_REFRESH_SECONDS}s")
+def _analytics_live_operations_fragment() -> None:
+    source_tag("live")
+    _render_live_pill("analytics_live")
+    kpis = _run_live("analytics_live", data.get_live_kpis) or {}
+    df = data.get_live_recovery_queue_df(limit=1000)
+
+    cols = st.columns(4, gap="small")
+    with cols[0]:
+        kpi_card("Failure volume", str(kpis.get("failed_payments", 0)), "raw_events, all-time")
+    with cols[1]:
+        kpi_card("Retry rate", f"{(kpis.get('retry_actions', 0) / kpis['policy_decisions'] * 100):.0f}%" if kpis.get("policy_decisions") else "—", "of orchestrated decisions")
+    with cols[2]:
+        kpi_card("Blocked / no-action rate", f"{(kpis.get('no_action', 0) / kpis['policy_decisions'] * 100):.0f}%" if kpis.get("policy_decisions") else "—", "of orchestrated decisions")
+    with cols[3]:
+        n_sent = int((df["communication_action"] == "sent").sum()) if not df.empty else 0
+        n_blocked = int((df["communication_action"] == "blocked").sum()) if not df.empty else 0
+        kpi_card("Communication outcomes", f"{n_sent} sent / {n_blocked} blocked", "live LLMInvocation + compliance rows")
+
+    if df.empty:
+        empty_state("No live recovery decisions yet to summarize.")
         return
+    c1, c2 = st.columns(2, gap="small")
+    with c1:
+        st.markdown("###### Candidate selection")
+        counts = df["selected_candidate_type"].value_counts()
+        fig = go.Figure(go.Bar(x=counts.index, y=counts.values, marker_color="#2F4CDD"))
+        fig.update_layout(height=240, margin=dict(l=10, r=10, t=10, b=10), plot_bgcolor="white", paper_bgcolor="white")
+        st.plotly_chart(fig, width='stretch')
+    with c2:
+        st.markdown("###### Classification distribution")
+        counts = df["classification_bucket"].value_counts()
+        fig = go.Figure(go.Pie(labels=counts.index, values=counts.values, hole=0.55, marker_colors=["#1D9A6C", "#C23A2E", "#B0740B", "#5B6172"]))
+        fig.update_layout(height=240, margin=dict(l=10, r=10, t=10, b=10))
+        st.plotly_chart(fig, width='stretch')
 
-    merged = events.merge(subs, on="subscription_id", how="left") if subs is not None else events
-    with st.expander("Filters", expanded=False):
-        reasons = sorted(merged["error_reason"].dropna().unique().tolist())
-        chosen_reasons = st.multiselect("Failure reason", reasons, default=reasons)
-        if "plan_tier" in merged.columns:
-            tiers = sorted(merged["plan_tier"].dropna().unique().tolist())
-            chosen_tiers = st.multiselect("Plan tier", tiers, default=tiers)
-            merged = merged[merged["plan_tier"].isin(chosen_tiers)]
-    merged = merged[merged["error_reason"].isin(chosen_reasons)]
-
-    show_cols = [c for c in ["event_id", "subscription_id", "failure_timestamp", "amount", "error_reason", "plan_tier", "city_tier", "primary_instrument"] if c in merged.columns]
-    display = merged[show_cols].head(300).copy()
-    if "amount" in display.columns:
-        display["amount"] = display["amount"].map(money)
-    st.caption(f"Showing {len(display)} of {len(merged)} matching events (max 300 rows).")
-    st.dataframe(display, width='stretch', height=500, hide_index=True)
-
-
-# ---------------------------------------------------------------------------
-# Page: Analytics
-# ---------------------------------------------------------------------------
 
 def page_analytics() -> None:
-    section_header("Analytics", "Recovery performance, decision distribution, and system health.")
+    section_header("Analytics", "Live operational analytics and offline model/policy evaluation, kept in separate tabs — never mixed.")
 
-    report = data.load_report("decision_engine_v4_evaluation.json")
-    db, queue_df = data.build_demo_database()
+    tab_live, tab_eval = st.tabs(["Live Operations", "Model / Policy Evaluation"])
 
-    st.markdown("##### 1–2. Recovery value & recovery rate by policy")
-    source_tag("synthetic")
-    if report:
-        render_policy_comparison_charts(report)
-    else:
-        empty_state("No evaluation report available.")
+    with tab_live:
+        _analytics_live_operations_fragment()
 
-    st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
-    st.markdown("##### Baseline definitions")
-    source_tag("synthetic")
-    render_baseline_definitions_section(report)
+    with tab_eval:
+        report = data.load_report("decision_engine_v4_evaluation.json")
+        db, queue_df = data.build_demo_database()
 
-    st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
-    st.markdown("##### Statistical significance — Fixed Retry vs Deployed Policy")
-    source_tag("synthetic")
-    render_statistical_significance_section(report)
-
-    st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
-    st.markdown("##### Recovery economics")
-    source_tag("synthetic")
-    render_economics_section(report)
-
-    st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("##### 3. Candidate selection distribution")
-        source_tag("operational")
-        if not queue_df.empty:
-            counts = queue_df["selected_candidate_type"].value_counts()
-            fig = go.Figure(go.Bar(x=counts.index, y=counts.values, marker_color="#2F4CDD"))
-            fig.update_layout(height=320, margin=dict(l=10, r=10, t=10, b=10), plot_bgcolor="white", paper_bgcolor="white")
-            st.plotly_chart(fig, width='stretch')
+        st.markdown("##### 1–2. Recovery value & recovery rate by policy")
+        source_tag("synthetic")
+        if report:
+            render_policy_comparison_charts(report)
         else:
-            empty_state("No demo data available.")
-    with c2:
-        st.markdown("##### 4. Failure classification distribution")
-        source_tag("operational")
-        if not queue_df.empty:
-            counts = queue_df["classification_bucket"].value_counts()
-            fig = go.Figure(go.Pie(labels=counts.index, values=counts.values, hole=0.55, marker_colors=["#1D9A6C", "#C23A2E", "#B0740B", "#5B6172"]))
-            fig.update_layout(height=320, margin=dict(l=10, r=10, t=10, b=10))
-            st.plotly_chart(fig, width='stretch')
-        else:
-            empty_state("No demo data available.")
+            empty_state("No evaluation report available.")
 
-    c3, c4 = st.columns(2)
-    with c3:
-        st.markdown("##### 5. Compliance outcomes")
-        source_tag("operational")
-        if not queue_df.empty:
-            counts = queue_df["payment_action"].value_counts()
-            fig = go.Figure(go.Bar(x=counts.index, y=counts.values, marker_color="#1D9A6C"))
-            fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10), plot_bgcolor="white", paper_bgcolor="white")
-            st.plotly_chart(fig, width='stretch')
-        else:
-            empty_state("No demo data available.")
-    with c4:
-        st.markdown("##### 6. LLM success / fallback rate")
-        source_tag("operational")
-        llm_df = data.get_llm_invocations_df(db)
-        if not llm_df.empty:
-            counts = llm_df["success"].map({True: "Success", False: "Fallback used"}).value_counts()
-            fig = go.Figure(go.Pie(labels=counts.index, values=counts.values, hole=0.55, marker_colors=["#1D9A6C", "#B0740B"]))
-            fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10))
-            st.plotly_chart(fig, width='stretch')
-        else:
-            empty_state("No LLM invocations recorded yet.")
+        st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
+        st.markdown("##### Baseline definitions")
+        source_tag("synthetic")
+        render_baseline_definitions_section(report)
 
-    st.markdown("##### 7. Audit / event volume by actor")
-    source_tag("operational")
-    audit_df = data.get_audit_log_df(db)
-    if not audit_df.empty:
-        counts = audit_df["actor"].value_counts()
-        fig = go.Figure(go.Bar(x=counts.index, y=counts.values, marker_color="#2F4CDD"))
-        fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10), plot_bgcolor="white", paper_bgcolor="white")
-        st.plotly_chart(fig, width='stretch')
-    else:
-        empty_state("No audit records yet.")
+        st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
+        st.markdown("##### Statistical significance — Fixed Retry vs Deployed Policy")
+        source_tag("synthetic")
+        render_statistical_significance_section(report)
+
+        st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
+        st.markdown("##### Recovery economics")
+        source_tag("synthetic")
+        render_economics_section(report)
+
+        st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
+        c1, c2 = st.columns(2, gap="small")
+        with c1:
+            st.markdown("##### 3. Candidate selection distribution (demo sample)")
+            source_tag("demo")
+            if not queue_df.empty:
+                counts = queue_df["selected_candidate_type"].value_counts()
+                fig = go.Figure(go.Bar(x=counts.index, y=counts.values, marker_color="#2F4CDD"))
+                fig.update_layout(height=220, margin=dict(l=10, r=10, t=10, b=10), plot_bgcolor="white", paper_bgcolor="white")
+                st.plotly_chart(fig, width='stretch')
+            else:
+                empty_state("No demo data available.")
+        with c2:
+            st.markdown("##### 4. Failure classification distribution (demo sample)")
+            source_tag("demo")
+            if not queue_df.empty:
+                counts = queue_df["classification_bucket"].value_counts()
+                fig = go.Figure(go.Pie(labels=counts.index, values=counts.values, hole=0.55, marker_colors=["#1D9A6C", "#C23A2E", "#B0740B", "#5B6172"]))
+                fig.update_layout(height=220, margin=dict(l=10, r=10, t=10, b=10))
+                st.plotly_chart(fig, width='stretch')
+            else:
+                empty_state("No demo data available.")
 
 
 # ---------------------------------------------------------------------------
-# Page: Communications
+# Page: Communications -- LIVE database + the 3 interactive LLM job demos
 # ---------------------------------------------------------------------------
+
+@st.fragment(run_every=f"{LIVE_REFRESH_SECONDS}s")
+def _communications_live_fragment() -> None:
+    source_tag("live")
+    _render_live_pill("communications")
+    df = _run_live("communications", data.get_live_communications_df, limit=200)
+
+    if df is None or df.empty:
+        empty_state("No communications recorded yet.")
+        return
+
+    table = pd.DataFrame(
+        {
+            "Time": df["created_at"].map(data.format_ts),
+            "Event": df["event_id"],
+            "Task": df["task_name"],
+            "Language": df["language"].fillna("—"),
+            "Customer Segment": df["customer_segment"].fillna("—"),
+            "Retry Window": df["retry_window"].fillna("—"),
+            "Provider": df["provider"].fillna("—"),
+            "Status": df["status"],
+            "Detail": df["message_text"].fillna("—").map(lambda t: (t[:100] + "…") if len(t) > 100 else t),
+        }
+    )
+    st.caption(f"{len(table)} communication events (sent / fallback / blocked).")
+    st.dataframe(table, width='stretch', height=380, hide_index=True)
+
 
 def page_communications() -> None:
-    section_header("Communications", "The three Day-11 LLM jobs, downstream of every policy decision.")
+    section_header("Communications", "The three LLM jobs, downstream of every policy decision.")
 
-    db, queue_df = data.build_demo_database()
+    st.markdown("##### Outreach activity")
+    _communications_live_fragment()
 
-    st.markdown("##### Outreach Microcopy")
-    source_tag("operational")
-    llm_df = data.get_llm_invocations_df(db, task_name="outreach_microcopy")
-    if llm_df.empty:
-        empty_state("No outreach microcopy generated in this demo run.")
-    else:
-        import json as _json
-
-        records = []
-        for _, r in llm_df.iterrows():
-            try:
-                structured = _json.loads(r["structured_output"] or "{}")
-            except ValueError:
-                structured = {}
-            records.append({
-                "Event": r["event_id"], "Language": structured.get("language", "—"),
-                "Message": structured.get("message_text", "—"), "Provider": r["provider"],
-                "Outcome": "Sent" if r["success"] else "Fallback used",
-            })
-        out_df = pd.DataFrame.from_records(records)
-        for lang, label in [("en", "English"), ("hi", "Hindi"), ("hinglish", "Hinglish")]:
-            subset = out_df[out_df["Language"] == lang]
-            if subset.empty:
-                continue
-            st.markdown(f"**{label}**")
-            st.dataframe(subset[["Event", "Message", "Provider", "Outcome"]].head(5), width='stretch', hide_index=True)
-
-    st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
     st.markdown("##### Promise-to-Pay")
-    source_tag("operational")
+    source_tag("demo")
     st.caption("This job parses an INBOUND customer reply — try one below (calls llm/service.py::parse_promise_to_pay directly, mock provider).")
     reply_text = st.text_input("Customer reply", value="I'll pay Friday when salary comes, via UPI")
     if st.button("Parse reply"):
@@ -612,7 +685,7 @@ def page_communications() -> None:
         from llm.service import parse_promise_to_pay
 
         result = parse_promise_to_pay(customer_reply_text=reply_text, today=date(2026, 8, 24))
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3 = st.columns(3, gap="small")
         with c1:
             st.metric("Parsed date", result.structured_result.get("date") or "—")
         with c2:
@@ -621,7 +694,7 @@ def page_communications() -> None:
             st.metric("Channel", result.structured_result.get("channel", "—"))
         render_status_badge("SUCCESS" if result.success else "FALLBACK_USED")
 
-    st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
     st.markdown("##### Batch Explanation")
     source_tag("synthetic")
     report = data.load_report("decision_engine_v4_evaluation.json")
@@ -635,24 +708,28 @@ def page_communications() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Page: Audit Log
+# Page: Audit Log -- LIVE database
 # ---------------------------------------------------------------------------
 
-def page_audit_log() -> None:
-    section_header("Audit Log", "Every stage of every recovery decision, actor-labeled and timestamped.")
-    source_tag("operational")
+@st.fragment(run_every=f"{LIVE_REFRESH_SECONDS}s")
+def _audit_log_fragment() -> None:
+    source_tag("live")
+    _render_live_pill("audit_log")
+    db = data.get_live_session()
+    try:
+        audit_df = data.get_audit_log_df(db)
+    finally:
+        db.close()
 
-    db, queue_df = data.build_demo_database()
-    audit_df = data.get_audit_log_df(db)
     if audit_df.empty:
         empty_state("No audit records yet.")
         return
 
-    c1, c2 = st.columns(2)
+    c1, c2 = st.columns(2, gap="small")
     with c1:
-        actor = st.selectbox("Filter by actor", ["All"] + sorted(audit_df["actor"].unique().tolist()))
+        actor = st.selectbox("Filter by actor", ["All"] + sorted(audit_df["actor"].unique().tolist()), key="audit_actor_filter")
     with c2:
-        status = st.selectbox("Filter by status", ["All", "ok", "attention"])
+        status = st.selectbox("Filter by status", ["All", "ok", "attention"], key="audit_status_filter")
 
     filtered = audit_df.copy()
     if actor != "All":
@@ -660,33 +737,74 @@ def page_audit_log() -> None:
     if status != "All":
         filtered = filtered[filtered["status"] == status]
 
-    display = pd.DataFrame({
-        "Timestamp": filtered["timestamp"].map(data.format_ts),
-        "Event": filtered["event_id"],
-        "Actor": filtered["actor"],
-        "Action": filtered["action"],
-        "Status": filtered["status"],
-        "Reason": filtered["reason"].map(lambda r: (r or "")[:180] + ("…" if r and len(r) > 180 else "")),
-    })
+    display = pd.DataFrame(
+        {
+            "Timestamp": filtered["timestamp"].map(data.format_ts),
+            "Event": filtered["event_id"],
+            "Actor": filtered["actor"],
+            "Action": filtered["action"],
+            "Reason": filtered["reason"].map(lambda r: (r or "")[:180] + ("…" if r and len(r) > 180 else "")),
+        }
+    )
     st.caption(f"{len(display)} audit rows.")
-    st.dataframe(display, width='stretch', height=520, hide_index=True)
+    st.dataframe(display, width='stretch', height=460, hide_index=True)
+
+
+def page_audit_log() -> None:
+    section_header("Audit Log", "Every stage of every recovery decision, actor-labeled and timestamped, read live from the database.")
+    _audit_log_fragment()
 
 
 # ---------------------------------------------------------------------------
 # Page: System / Demo
 # ---------------------------------------------------------------------------
 
+@st.fragment(run_every=f"{LIVE_REFRESH_SECONDS}s")
+def _system_status_fragment() -> None:
+    source_tag("live")
+    _render_live_pill("system_status")
+    status = _run_live("system_status", data.get_live_system_status) or {}
+
+    cols = st.columns(4, gap="small")
+    with cols[0]:
+        kpi_card("FastAPI", "Connected" if status.get("fastapi_connected") else "Unavailable", "GET /health")
+    with cols[1]:
+        kpi_card("Database", "Connected" if status.get("database_connected") else "Unavailable", status.get("database_error") or "settings.DATABASE_URL")
+    with cols[2]:
+        kpi_card("Webhook secret", "Configured" if status.get("webhook_secret_configured") else "Missing", "RAZORPAY_WEBHOOK_SECRET (value never shown)")
+    with cols[3]:
+        kpi_card("Razorpay webhook enablement", "Unknown", "Not queryable from this backend — no Razorpay account API call is implemented")
+
+    cols2 = st.columns(4, gap="small")
+    with cols2[0]:
+        kpi_card("LLM provider", status.get("llm_provider", "—").upper(), "settings.LLM_PROVIDER")
+    with cols2[1]:
+        kpi_card("Model", "Loaded" if status.get("model_loaded") else "Missing", "Day-8 latent-value model artifact")
+    with cols2[2]:
+        kpi_card("Last event received", data.format_ts(status.get("last_event_received")), "MAX(raw_events.received_at)")
+    with cols2[3]:
+        kpi_card("Last successful processing", data.format_ts(status.get("last_successful_processing")), "latest orchestrator_final_status audit row")
+
+    st.caption(f"Live refresh: enabled, every {LIVE_REFRESH_SECONDS} seconds (st.fragment(run_every=\"{LIVE_REFRESH_SECONDS}s\")).")
+
+
 def page_system_demo() -> None:
-    section_header("System / Demo", "Environment, versions, and an interactive recovery-flow runner.")
+    section_header("System / Demo", "Actual runtime state, plus an interactive recovery-flow runner over demo-generated data.")
 
     from llm.client import MOCK_MODEL_NAME
     from policy.compliance import COMPLIANCE_RULE_VERSION
     from policy.decision_engine import MODEL_VERSION
     from policy.decision_engine_v4 import POLICY_VERSION_V4
 
-    cols = st.columns(5)
+    st.markdown("##### Live runtime status")
+    _system_status_fragment()
+
+    st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
+    st.markdown("##### Component versions")
+    source_tag("live")
+    cols = st.columns(5, gap="small")
     with cols[0]:
-        kpi_card("Environment", "Offline Demo", "No live Razorpay/LLM network calls")
+        kpi_card("Environment", "Offline Demo", "No live Razorpay/LLM network calls from this UI")
     with cols[1]:
         kpi_card("LLM", "Mock", MOCK_MODEL_NAME)
     with cols[2]:
@@ -696,19 +814,20 @@ def page_system_demo() -> None:
     with cols[4]:
         kpi_card("Model", "Day-8 Model B", MODEL_VERSION)
 
-    st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
     st.markdown("##### Test suite")
     n_functions = data.count_test_functions()
-    st.markdown(f'<div class="ar-card">{n_functions} test functions defined across tests/*.py (dynamically counted; some are parametrized into more individual cases at collection time — the last full pytest run reported 432 passing). Use the button below for a live count.</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="ar-card">{n_functions} test functions defined across tests/*.py (dynamically counted; some are parametrized into more individual cases at collection time). Use the button below for a live count.</div>', unsafe_allow_html=True)
     if st.button("Run full test suite now"):
         with st.spinner("Running pytest tests/ -q ..."):
             code, tail = data.run_full_test_suite()
         render_status_badge("SUCCESS" if code == 0 else "FAILURE")
         st.code(tail)
 
-    st.markdown("<div style='height:1.4rem'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
     st.markdown("##### Interactive demo — Run Demo Event")
-    st.caption("Uses recovery/orchestrator.py directly. No live Razorpay actions are ever attempted.")
+    source_tag("demo")
+    st.caption("Uses recovery/orchestrator.py directly, over a throwaway in-memory database. No live Razorpay actions are ever attempted.")
     scenario = st.selectbox("Scenario", list(data.DEMO_SCENARIOS.keys()))
     if st.button("Run recovery"):
         model = data._try_load_model()
@@ -722,19 +841,19 @@ def page_system_demo() -> None:
             ("Communication", f"{result.communication_action}" + (f" ({result.llm_task_name})" if result.llm_task_name else "")),
             ("Final result", result.final_status),
         ]
-        cols = st.columns(5)
+        cols = st.columns(5, gap="small")
         for col, (title, body) in zip(cols, steps):
             with col:
                 st.markdown(f"**{title}**")
                 st.write(body)
-        st.markdown("<div style='height:0.6rem'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height:0.25rem'></div>", unsafe_allow_html=True)
         render_status_badge(result.final_status)
 
         if promise_rows:
-            st.markdown("<div style='height:0.8rem'></div>", unsafe_allow_html=True)
+            st.markdown("<div style='height:0.3rem'></div>", unsafe_allow_html=True)
             st.markdown("##### Promise-to-pay")
             promise = promise_rows[-1]
-            p1, p2, p3, p4 = st.columns(4)
+            p1, p2, p3, p4 = st.columns(4, gap="small")
             with p1:
                 st.markdown("**Promised date**")
                 st.write(promise.promised_date.date().isoformat() if promise.promised_date else "—")
@@ -758,7 +877,7 @@ def page_system_demo() -> None:
         if result.llm_task_name:
             message_text = data.extract_llm_message_from_audit_rows(audit_rows)
             if message_text:
-                st.markdown("<div style='height:0.6rem'></div>", unsafe_allow_html=True)
+                st.markdown("<div style='height:0.25rem'></div>", unsafe_allow_html=True)
                 st.markdown("**Generated / fallback message**")
                 st.markdown(f'<div class="ar-card">{html.escape(message_text)}</div>', unsafe_allow_html=True)
 
@@ -773,11 +892,20 @@ def page_system_demo() -> None:
 
 def main() -> None:
     inject_css()
+
+    status = data.get_live_system_status()
+    top_bar(
+        test_mode=status.get("environment") == "test",
+        live_ok=status.get("database_connected", False),
+        refresh_label=f"live · {LIVE_REFRESH_SECONDS}s refresh",
+    )
+
     sidebar_brand()
     page = st.sidebar.radio(
         "Navigate", NAV_PAGES, label_visibility="collapsed",
         format_func=lambda p: f"{NAV_ICONS[p]}  {p}",
     )
+    sidebar_status_block(status)
 
     pages = {
         "Overview": page_overview,

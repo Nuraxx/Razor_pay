@@ -14,6 +14,29 @@ from app.main import app
 TEST_WEBHOOK_SECRET = "test_webhook_secret_for_pytest_only"
 
 
+@pytest.fixture(autouse=True)
+def _force_mock_llm_provider_by_default(monkeypatch):
+    """The suite must stay runnable offline regardless of the developer's
+    own local .env (app/config.py's `load_dotenv()` loads the real .env
+    unconditionally at import time -- there is no test-specific override).
+    Without this, any test that calls generate_outreach_microcopy() /
+    parse_promise_to_pay() / generate_batch_explanation() without an
+    explicit `client=` argument falls through to get_llm_client(), which
+    would make a REAL network call whenever a developer's .env happens to
+    have LLM_PROVIDER=anthropic/gemini set (e.g. for real-API testing) --
+    producing non-deterministic output that breaks assertions written
+    against the deterministic mock provider.
+
+    A test that specifically wants to exercise a real provider's selection
+    logic (e.g. TestGeminiProviderSelection) still can: its own
+    monkeypatch.setattr(...) call in the test body runs after this autouse
+    fixture and simply overwrites the same attribute for that test only.
+    """
+    monkeypatch.setattr("app.config.settings.LLM_PROVIDER", "mock")
+    monkeypatch.setattr("app.config.settings.ANTHROPIC_API_KEY", "")
+    monkeypatch.setattr("app.config.settings.GEMINI_API_KEY", "")
+
+
 @pytest.fixture()
 def test_db_session():
     """A fresh in-memory SQLite DB per test, isolated from the real data/*.db file."""

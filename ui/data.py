@@ -1,26 +1,37 @@
 """
-Day-13 dashboard data layer.
+Day-13/14 dashboard data layer.
 
-Two distinct data sources, never mixed (brief section 5):
+THREE distinct data sources, never mixed:
 
   SYNTHETIC BENCHMARK   -- the frozen offline evaluation reports Days 6-10
                            already computed and wrote to
                            evaluation/reports/*.json -- e.g. "what would
                            Fixed Retry vs. Model B vs. Oracle have scored on
                            the held-out test set." Read-only, never
-                           recomputed here.
-  OPERATIONAL DEMO DATA -- a live run of recovery/orchestrator.py (Day 12,
+                           recomputed here. STATIC data/raw/*.csv (the
+                           synthetic dataset those reports were computed
+                           from) is the same category.
+  DEMO-GENERATED         -- a live run of recovery/orchestrator.py (Day 12,
                            unmodified) over a sample of REAL generated
                            failure events (data/raw/failure_events.csv +
-                           subscriptions.csv), using the real trained Day-8
-                           Model B and the Day-11 mock LLM provider. This is
-                           what populates the Recovery Queue, Event Detail,
-                           Communications, and Audit Log pages.
+                           subscriptions.csv), written to a THROWAWAY
+                           in-memory SQLite DB, using the real trained
+                           Day-8 Model B and the Day-11 mock LLM provider.
+                           Powers the "System / Demo" page's interactive
+                           scenario runner only -- never labeled "live".
+  LIVE DATABASE          -- read-only queries against the REAL,
+                           Razorpay-webhook-backed SQLite file at
+                           settings.DATABASE_URL (see the "LIVE DATABASE"
+                           section below) -- the exact file
+                           app/main.py's /webhook/razorpay handler writes
+                           to. Powers Overview's live KPIs/recent-events,
+                           Recovery Queue, Payment Events, Communications,
+                           Audit Log, and the System page's status block.
 
 Every loader here degrades gracefully (brief section 17): a missing
-evaluation report or an empty database returns None / an empty DataFrame,
-never raises, so the dashboard always launches and renders a clear empty
-state instead of crashing.
+evaluation report or an empty/unreachable database returns None / an empty
+DataFrame / an explicit status flag, never raises, so the dashboard always
+launches and renders a clear empty state instead of crashing.
 """
 from __future__ import annotations
 
@@ -34,7 +45,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db import Base
-from app.models import AuditLog, LLMInvocation, PolicyDecision, PromiseToPay
+from app.models import AuditLog, FailureEvent, LLMInvocation, PolicyDecision, PromiseToPay, RawEvent
 from classification.rules import classify
 from llm.client import LLMClient, LLMProviderError
 from model.candidate_preprocessing import PROJECT_ROOT
@@ -147,13 +158,17 @@ def build_demo_database(sample_size: int = DEMO_SAMPLE_SIZE):
     return db, _recovery_queue_df(db)
 
 
+@st.cache_resource(show_spinner=False)
 def _try_load_model():
+    """Cached (Part 21: a live 5-second refresh must never repeatedly pay
+    model-deserialization cost) -- orchestrate_recovery's own
+    model-unavailable fallback path handles a None model safely either way."""
     try:
         from model.train_latent_target_model import load_latent_target_model
 
         return load_latent_target_model("value")
     except Exception:
-        return None  # orchestrator's own model-unavailable fallback path handles this safely
+        return None
 
 
 def _recovery_queue_df(db) -> pd.DataFrame:
@@ -237,6 +252,356 @@ def _derive_final_status(row: pd.Series) -> str:
     if row["communication_action"] == "sent":
         return "COMMUNICATION_ALLOWED"
     return "RETRY_ALLOWED"
+
+
+# ---------------------------------------------------------------------------
+# LIVE DATABASE: read-only queries against the REAL, Razorpay-webhook-backed
+# SQLite file at settings.DATABASE_URL (app/db.py's SessionLocal) -- the
+# exact file app/main.py's /webhook/razorpay handler writes to. This is NOT
+# the same database as "OPERATIONAL DEMO DATA" above (a throwaway :memory:
+# DB populated by re-running the orchestrator over sample CSV rows) -- the
+# two are never mixed, and no function below ever falls back to demo data.
+#
+# CACHING (brief section 13): nothing here uses @st.cache_data /
+# @st.cache_resource. Each call opens a fresh session, queries, and closes
+# it -- the 5-second st.fragment(run_every=...) refresh in ui/app.py is the
+# freshness mechanism; caching on top of that would just reintroduce the
+# staleness it exists to avoid.
+# ---------------------------------------------------------------------------
+
+def get_live_session():
+    """A fresh session against the real file-backed DB. Never reused across
+    calls -- SQLite reads current committed rows per-connection, which is
+    what makes writes from the FastAPI process (a separate OS process)
+    visible here."""
+    from app.db import SessionLocal
+
+    return SessionLocal()
+
+
+def get_live_system_status() -> dict:
+    """Best-effort, NEVER-raising snapshot of actual runtime state. Every
+    field is either a real check performed this call or explicitly
+    None/False -- this never reports a component healthy without having
+    just verified it (brief: "Do not claim healthy when the code cannot
+    actually verify it")."""
+    from app.config import settings
+
+    status = {
+        "environment": settings.RAZORPAY_ENV,
+        "database_connected": False,
+        "database_error": None,
+        "fastapi_connected": False,
+        "fastapi_error": None,
+        "webhook_secret_configured": bool(settings.RAZORPAY_WEBHOOK_SECRET),
+        "llm_provider": settings.LLM_PROVIDER,
+        "model_loaded": _try_load_model() is not None,
+        "last_event_received": None,
+        "last_successful_processing": None,
+    }
+
+    try:
+        db = get_live_session()
+        try:
+            last_event = db.query(RawEvent).order_by(RawEvent.id.desc()).limit(1).one_or_none()
+            status["last_event_received"] = last_event.received_at if last_event else None
+            last_final = (
+                db.query(AuditLog)
+                .filter(AuditLog.action == "orchestrator_final_status")
+                .order_by(AuditLog.id.desc())
+                .limit(1)
+                .one_or_none()
+            )
+            status["last_successful_processing"] = last_final.created_at if last_final else None
+            status["database_connected"] = True
+        finally:
+            db.close()
+    except Exception as exc:  # noqa: BLE001 -- a status probe must never crash the dashboard
+        status["database_error"] = str(exc)
+
+    try:
+        import httpx
+
+        resp = httpx.get(f"http://127.0.0.1:{settings.APP_PORT}/health", timeout=1.5)
+        status["fastapi_connected"] = resp.status_code == 200
+    except Exception as exc:  # noqa: BLE001 -- FastAPI simply not running is a normal, displayable state
+        status["fastapi_error"] = type(exc).__name__
+
+    return status
+
+
+def get_live_kpis() -> dict:
+    """Counts derived ONLY from what's actually persisted. Deliberately has
+    NO recovery-rate / recovered-value field -- this schema has no
+    confirmed-payment-succeeded signal (Razorpay would need to deliver a
+    further payment.captured/subscription.charged event this project
+    doesn't yet track); a scheduled retry is not a confirmed recovery, and
+    fabricating that number would violate the brief's "never fake live
+    data." Recovery rate stays exclusively a SYNTHETIC BENCHMARK metric."""
+    db = get_live_session()
+    try:
+        total_raw_events = db.query(RawEvent).count()
+        total_decisions = db.query(PolicyDecision).count()
+        retry_actions = db.query(PolicyDecision).filter(PolicyDecision.selected_candidate_type != "NO_ACTION").count()
+        classified_raw_ids = {row[0] for row in db.query(FailureEvent.raw_event_id).all()}
+        all_raw_ids = {row[0] for row in db.query(RawEvent.id).all()}
+        return {
+            "failed_payments": total_raw_events,
+            "policy_decisions": total_decisions,
+            "retry_actions": retry_actions,
+            "no_action": total_decisions - retry_actions,
+            "received_not_orchestrated": len(all_raw_ids - classified_raw_ids),
+        }
+    finally:
+        db.close()
+
+
+def get_live_raw_events_df(limit: int = 200) -> pd.DataFrame:
+    db = get_live_session()
+    try:
+        rows = db.query(RawEvent).order_by(RawEvent.id.desc()).limit(limit).all()
+        return pd.DataFrame.from_records(
+            [
+                {
+                    "id": r.id,
+                    "received_at": r.received_at,
+                    "razorpay_event_id": r.razorpay_event_id,
+                    "event_type": r.event_type,
+                    "payment_id": r.payment_id,
+                    "order_id": r.order_id,
+                    "subscription_id": r.subscription_id,
+                    "amount_rupees": (r.amount or 0) / 100.0,
+                    "currency": r.currency,
+                    "error_code": r.error_code,
+                    "error_reason": r.error_reason,
+                    "error_source": r.error_source,
+                    "error_step": r.error_step,
+                    "signature_verified": r.signature_verified,
+                    "raw_payload": r.raw_payload,
+                }
+                for r in rows
+            ]
+        )
+    finally:
+        db.close()
+
+
+def get_live_recovery_queue_df(limit: int = 200) -> pd.DataFrame:
+    """Reuses _derive_final_status -- the SAME precedence logic the demo
+    path above already established (brief: never duplicate decision
+    logic). The only real difference from the demo path is that
+    amount/error_reason/payment_id come from an actual join to
+    raw_events/failure_events instead of a CSV lookup: a live
+    PolicyDecision.event_id is a real failure_events.id, not a CSV row
+    index the demo path repurposes as one."""
+    db = get_live_session()
+    try:
+        rows = (
+            db.query(PolicyDecision, RawEvent)
+            .join(FailureEvent, FailureEvent.id == PolicyDecision.event_id)
+            .join(RawEvent, RawEvent.id == FailureEvent.raw_event_id)
+            .order_by(PolicyDecision.id.desc())
+            .limit(limit)
+            .all()
+        )
+        records = []
+        for policy_row, raw_row in rows:
+            comm = (
+                db.query(LLMInvocation)
+                .filter(LLMInvocation.event_id == policy_row.event_id, LLMInvocation.task_name == "outreach_microcopy")
+                .order_by(LLMInvocation.id.desc())
+                .first()
+            )
+            promise = (
+                db.query(PromiseToPay)
+                .filter(PromiseToPay.event_id == policy_row.event_id, PromiseToPay.override_applied.is_(True))
+                .order_by(PromiseToPay.id.desc())
+                .first()
+            )
+            if comm is not None:
+                communication_action = "sent" if comm.success else "fallback_used"
+            elif policy_row.classification_bucket in ("customer_cancelled", "unmapped"):
+                communication_action = "skipped"
+            else:
+                communication_action = "blocked"
+
+            record = {
+                "event_id": policy_row.event_id,
+                "raw_event_id": raw_row.id,
+                "payment_id": raw_row.payment_id,
+                "subscription_id": policy_row.subscription_id,
+                "amount_rupees": (raw_row.amount or 0) / 100.0,
+                "error_reason": raw_row.error_reason,
+                "classification_bucket": policy_row.classification_bucket,
+                "selected_candidate_type": policy_row.selected_candidate_type,
+                "selected_candidate_datetime": policy_row.selected_candidate_datetime,
+                "decision_source": policy_row.decision_source,
+                "policy_version": policy_row.policy_version,
+                "decision_reason": policy_row.decision_reason,
+                "communication_action": communication_action,
+                "llm_success": comm.success if comm is not None else None,
+                "decided_at": policy_row.decided_at,
+                "promise_applied": promise is not None,
+            }
+            record["final_status"] = _derive_final_status(pd.Series(record))
+            record["payment_action"] = "no_action" if policy_row.selected_candidate_type == "NO_ACTION" else "retry_scheduled"
+            records.append(record)
+        return pd.DataFrame.from_records(records)
+    finally:
+        db.close()
+
+
+def get_live_event_detail(event_id) -> dict | None:
+    """Same shape get_event_detail (demo path) already returns, plus the
+    raw_events/failure_events rows a live event actually needs (the demo
+    path's event_id IS the CSV row, so it never needed this join)."""
+    db = get_live_session()
+    try:
+        policy_row = db.query(PolicyDecision).filter(PolicyDecision.event_id == event_id).first()
+        if policy_row is None:
+            return None
+        failure_row = db.query(FailureEvent).filter(FailureEvent.id == event_id).first()
+        raw_row = db.query(RawEvent).filter(RawEvent.id == failure_row.raw_event_id).first() if failure_row else None
+        audit_rows = db.query(AuditLog).filter(AuditLog.failure_event_id == event_id).order_by(AuditLog.id).all()
+        llm_rows = db.query(LLMInvocation).filter(LLMInvocation.event_id == event_id).order_by(LLMInvocation.id).all()
+        promise_rows = db.query(PromiseToPay).filter(PromiseToPay.event_id == event_id).order_by(PromiseToPay.id).all()
+        return {
+            "policy": policy_row, "failure": failure_row, "raw": raw_row,
+            "audit": audit_rows, "llm": llm_rows, "promises": promise_rows,
+        }
+    finally:
+        db.close()
+
+
+def get_live_unrouted_raw_events_df(limit: int = 50) -> pd.DataFrame:
+    """Raw events that were stored but never reached classification/policy
+    at all -- e.g. a Payment Link `payment.failed` with no subscription_id
+    (recovery/webhook_pipeline.py's own documented scope: Subscriptions
+    only). Surfaced explicitly rather than silently vanishing from every
+    other live table -- accurately representing actual backend state
+    instead of implying a policy decision happened when it didn't."""
+    db = get_live_session()
+    try:
+        classified_raw_ids = {row[0] for row in db.query(FailureEvent.raw_event_id).all()}
+        rows = db.query(RawEvent).order_by(RawEvent.id.desc()).limit(limit * 4).all()
+        unrouted = [r for r in rows if r.id not in classified_raw_ids][:limit]
+        return pd.DataFrame.from_records(
+            [
+                {
+                    "id": r.id,
+                    "received_at": r.received_at,
+                    "event_type": r.event_type,
+                    "payment_id": r.payment_id,
+                    "subscription_id": r.subscription_id,
+                    "amount_rupees": (r.amount or 0) / 100.0,
+                    "error_reason": r.error_reason,
+                    "reason_not_orchestrated": (
+                        "no subscription_id -- Subscriptions-only scope"
+                        if not r.subscription_id
+                        else "unsupported event_type"
+                        if r.event_type != "payment.failed"
+                        else "not yet processed"
+                    ),
+                }
+                for r in unrouted
+            ]
+        )
+    finally:
+        db.close()
+
+
+def get_live_communications_df(limit: int = 200) -> pd.DataFrame:
+    """LLM invocations from the real DB, PLUS compliance-blocked
+    communications -- those never reach llm/service.py at all (see
+    recovery/orchestrator.py's communication_action="blocked" branch), so
+    without this they'd silently vanish rather than show their real
+    compliance reason. Retry-window text is DERIVED (never invented) via
+    the same recovery/orchestrator.py::describe_retry_window the
+    orchestrator itself used, joined off the correlated PolicyDecision."""
+    from recovery.orchestrator import describe_retry_window
+
+    db = get_live_session()
+    try:
+        llm_rows = (
+            db.query(LLMInvocation)
+            .filter(LLMInvocation.task_name == "outreach_microcopy")
+            .order_by(LLMInvocation.id.desc())
+            .limit(limit)
+            .all()
+        )
+        policy_by_event = {p.event_id: p for p in db.query(PolicyDecision).all()}
+        records = []
+        for r in llm_rows:
+            try:
+                structured = json.loads(r.structured_output or "{}")
+            except ValueError:
+                structured = {}
+            policy_row = policy_by_event.get(r.event_id)
+            records.append(
+                {
+                    "created_at": r.created_at,
+                    "event_id": r.event_id,
+                    "task_name": r.task_name,
+                    "language": structured.get("language"),
+                    "customer_segment": structured.get("customer_segment"),
+                    "retry_window": describe_retry_window(policy_row.selected_candidate_type) if policy_row else None,
+                    "provider": r.provider,
+                    "success": r.success,
+                    "status": "sent" if r.success else "fallback_used",
+                    "message_text": structured.get("message_text"),
+                }
+            )
+
+        blocked_audit_rows = (
+            db.query(AuditLog)
+            .filter(AuditLog.action == "orchestrator_compliance", AuditLog.reason.like("%communication_action_allowed=False%"))
+            .order_by(AuditLog.id.desc())
+            .limit(limit)
+            .all()
+        )
+        for a in blocked_audit_rows:
+            policy_row = policy_by_event.get(a.failure_event_id)
+            comm_reason = extract_compliance_fields(a.reason).get("communication_reason")
+            records.append(
+                {
+                    "created_at": a.created_at,
+                    "event_id": a.failure_event_id,
+                    "task_name": "outreach_microcopy",
+                    "language": None,
+                    "customer_segment": None,
+                    "retry_window": describe_retry_window(policy_row.selected_candidate_type) if policy_row else None,
+                    "provider": None,
+                    "success": None,
+                    "status": "blocked",
+                    "message_text": comm_reason,
+                }
+            )
+
+        df = pd.DataFrame.from_records(records)
+        if not df.empty:
+            df = df.sort_values("created_at", ascending=False).reset_index(drop=True)
+        return df
+    finally:
+        db.close()
+
+
+_COMPLIANCE_REASON_PATTERN = re.compile(
+    r"payment_action_allowed=(?P<payment_allowed>\w+)\s+payment_reason=(?P<payment_reason>.*?)\s*\|\s*"
+    r"communication_action_allowed=(?P<communication_allowed>\w+)\s+communication_reason=(?P<communication_reason>.*?)\s*\|\s*"
+    r"rule_version=(?P<rule_version>\S+)"
+)
+
+
+def extract_compliance_fields(reason: str | None) -> dict:
+    """Best-effort parse of recovery/orchestrator.py's own
+    `actor="compliance"` audit_log reason string -- DISPLAY ONLY, never
+    feeds any decision. Tailored to that exact f-string format (this
+    project's own, unchanged), not a generic parser -- returns {} rather
+    than guessing if the format doesn't match."""
+    if not reason:
+        return {}
+    match = _COMPLIANCE_REASON_PATTERN.search(reason)
+    return match.groupdict() if match else {}
 
 
 def extract_llm_message_from_audit_rows(audit_rows) -> str | None:

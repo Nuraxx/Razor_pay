@@ -1,0 +1,18 @@
+# Visual-polish pass: forces the light Razorpay-style theme regardless of
+# the viewer's OS/browser dark-mode preference. Without this, Streamlit
+# auto-detects a dark theme and native widgets it renders itself (st.dataframe's
+# grid, st.selectbox, st.button, etc.) follow THAT theme -- ui/styles.py's
+# injected CSS can restyle ordinary HTML elements, but not that internal
+# theme resolution, which is why the payment-events table was rendering
+# dark even though the rest of the page was light. Values below are kept in
+# sync with ui/styles.py's own color tokens (ACCENT/BG/CARD_BG/TEXT_PRIMARY).
+[theme]
+base = "light"
+primaryColor = "#2F4CDD"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F5F6F8"
+textColor = "#161B33"
+font = "sans serif"
+
+[client]
+toolbarMode = "minimal"

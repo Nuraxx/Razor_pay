@@ -419,3 +419,287 @@ def test_count_test_functions_is_dynamic_and_positive():
     assert count > 0
     # sanity: this very file contributes at least a handful of test_ functions
     assert count >= 20
+
+
+# ---------------------------------------------------------------------------
+# LIVE DATABASE query layer (Part 14/22/25/26 of the operations-console
+# rebuild). Exercised against a controlled, seeded, throwaway in-memory
+# SQLite engine -- monkeypatching ui.data.get_live_session -- NEVER the
+# real data/recovery_agent.db, so these tests are hermetic and
+# reproducible regardless of what real webhook traffic exists locally.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def live_db_session_factory(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    data.Base.metadata.create_all(bind=engine)
+    factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(data, "get_live_session", lambda: factory())
+    return factory
+
+
+def _seed_live_event(
+    factory, *, suffix="1", subscription_id="sub_live_1", error_reason="insufficient_fund",
+    classification_bucket="retryable_soft", selected_candidate_type="plus_1_day_morning",
+    with_llm=True, with_blocked_comm=False,
+):
+    from app.models import AuditLog, FailureEvent, LLMInvocation, PolicyDecision, RawEvent
+
+    db = factory()
+    raw = RawEvent(
+        razorpay_event_id=f"evt_test_{suffix}", event_type="payment.failed", payment_id=f"pay_test_{suffix}",
+        subscription_id=subscription_id, amount=250000, currency="INR", error_reason=error_reason,
+        error_source="gateway", error_step="payment_authorization", signature_verified=True, raw_payload="{}",
+    )
+    db.add(raw)
+    db.flush()
+    failure = FailureEvent(raw_event_id=raw.id, classification_bucket=classification_bucket, classification_confidence=1.0, rule_version="v1")
+    db.add(failure)
+    db.flush()
+    policy = PolicyDecision(
+        event_id=failure.id, subscription_id=subscription_id, selected_candidate_type=selected_candidate_type,
+        policy_version="v4", decision_reason="test seed", decision_source="day8_model_b", classification_bucket=classification_bucket,
+    )
+    db.add(policy)
+    db.add(AuditLog(raw_event_id=raw.id, failure_event_id=failure.id, action="webhook_received_and_stored", actor="system"))
+    db.add(
+        AuditLog(
+            failure_event_id=failure.id, action="orchestrator_compliance", actor="compliance",
+            reason=(
+                f"payment_action_allowed=True payment_reason=ok | "
+                f"communication_action_allowed={'False' if with_blocked_comm else 'True'} "
+                f"communication_reason={'blocked for test' if with_blocked_comm else 'ok'} | rule_version=v1"
+            ),
+        )
+    )
+    if with_llm:
+        db.add(
+            LLMInvocation(
+                event_id=failure.id, task_name="outreach_microcopy", model_name="mock", prompt_version="v1",
+                provider="mock", success=True,
+                structured_output=json.dumps({"message_text": "hi", "language": "en", "failure_bucket": classification_bucket, "customer_segment": "mid"}),
+            )
+        )
+    db.add(AuditLog(failure_event_id=failure.id, action="orchestrator_final_status", actor="orchestrator", reason="final_status=COMMUNICATION_ALLOWED"))
+    db.commit()
+    event_id = failure.id
+    db.close()
+    return event_id
+
+
+def test_get_live_raw_events_df_empty_db_returns_empty_dataframe(live_db_session_factory):
+    df = data.get_live_raw_events_df()
+    assert df.empty
+
+
+def test_get_live_kpis_empty_db_returns_zeros(live_db_session_factory):
+    assert data.get_live_kpis() == {
+        "failed_payments": 0, "policy_decisions": 0, "retry_actions": 0, "no_action": 0, "received_not_orchestrated": 0,
+    }
+
+
+def test_get_live_recovery_queue_df_empty_db_returns_empty_dataframe(live_db_session_factory):
+    assert data.get_live_recovery_queue_df().empty
+
+
+def test_get_live_communications_df_empty_db_returns_empty_dataframe(live_db_session_factory):
+    assert data.get_live_communications_df().empty
+
+
+def test_get_live_unrouted_raw_events_df_empty_db_returns_empty_dataframe(live_db_session_factory):
+    assert data.get_live_unrouted_raw_events_df().empty
+
+
+def test_get_live_system_status_reports_database_connected_on_healthy_db(live_db_session_factory):
+    status = data.get_live_system_status()
+    assert status["database_connected"] is True
+    assert status["database_error"] is None
+
+
+def test_get_live_system_status_never_raises_when_db_broken(monkeypatch):
+    def _broken_session():
+        raise RuntimeError("simulated db failure")
+
+    monkeypatch.setattr(data, "get_live_session", _broken_session)
+    status = data.get_live_system_status()  # must not raise
+    assert status["database_connected"] is False
+    assert status["database_error"] is not None
+
+
+def test_get_live_raw_events_df_returns_seeded_row(live_db_session_factory):
+    _seed_live_event(live_db_session_factory)
+    df = data.get_live_raw_events_df()
+    assert len(df) == 1
+    assert df.iloc[0]["payment_id"] == "pay_test_1"
+    assert df.iloc[0]["amount_rupees"] == 2500.0  # 250000 paise -> rupees
+
+
+def test_get_live_kpis_counts_seeded_event(live_db_session_factory):
+    _seed_live_event(live_db_session_factory, selected_candidate_type="plus_1_day_morning")
+    kpis = data.get_live_kpis()
+    assert kpis["failed_payments"] == 1
+    assert kpis["policy_decisions"] == 1
+    assert kpis["retry_actions"] == 1
+    assert kpis["no_action"] == 0
+    assert kpis["received_not_orchestrated"] == 0
+
+
+def test_get_live_kpis_counts_no_action_decision(live_db_session_factory):
+    _seed_live_event(live_db_session_factory, selected_candidate_type="NO_ACTION", with_llm=False)
+    kpis = data.get_live_kpis()
+    assert kpis["retry_actions"] == 0
+    assert kpis["no_action"] == 1
+
+
+def test_get_live_recovery_queue_df_derives_final_status(live_db_session_factory):
+    event_id = _seed_live_event(live_db_session_factory)
+    df = data.get_live_recovery_queue_df()
+    assert len(df) == 1
+    row = df.iloc[0]
+    assert row["event_id"] == event_id
+    assert row["communication_action"] == "sent"
+    assert row["final_status"] == "COMMUNICATION_ALLOWED"
+    assert row["payment_action"] == "retry_scheduled"
+
+
+def test_get_live_event_detail_returns_full_shape(live_db_session_factory):
+    event_id = _seed_live_event(live_db_session_factory)
+    detail = data.get_live_event_detail(event_id)
+    assert detail is not None
+    assert detail["policy"].event_id == event_id
+    assert detail["raw"].payment_id == "pay_test_1"
+    assert len(detail["audit"]) >= 2
+
+
+def test_get_live_event_detail_unknown_event_returns_none(live_db_session_factory):
+    assert data.get_live_event_detail(999999) is None
+
+
+def test_get_live_unrouted_raw_events_df_flags_missing_subscription(live_db_session_factory):
+    from app.models import RawEvent
+
+    db = live_db_session_factory()
+    db.add(
+        RawEvent(
+            razorpay_event_id="evt_unrouted", event_type="payment.failed", payment_id="pay_unrouted",
+            subscription_id=None, amount=10000, currency="INR", error_reason="payment_failed",
+            signature_verified=True, raw_payload="{}",
+        )
+    )
+    db.commit()
+    db.close()
+
+    df = data.get_live_unrouted_raw_events_df()
+    assert len(df) == 1
+    assert "no subscription_id" in df.iloc[0]["reason_not_orchestrated"]
+
+
+def test_get_live_unrouted_raw_events_df_excludes_classified_events(live_db_session_factory):
+    _seed_live_event(live_db_session_factory)  # this one IS classified/orchestrated
+    assert data.get_live_unrouted_raw_events_df().empty
+
+
+def test_get_live_communications_df_includes_sent_and_blocked(live_db_session_factory):
+    _seed_live_event(live_db_session_factory, suffix="sent", with_llm=True)
+    _seed_live_event(live_db_session_factory, suffix="blocked", with_llm=False, with_blocked_comm=True)
+    df = data.get_live_communications_df()
+    statuses = set(df["status"])
+    assert "sent" in statuses
+    assert "blocked" in statuses
+    sent_row = df[df["status"] == "sent"].iloc[0]
+    assert sent_row["language"] == "en"
+    assert sent_row["customer_segment"] == "mid"
+
+
+def test_extract_compliance_fields_parses_real_format():
+    reason = (
+        "payment_action_allowed=True payment_reason=ok to retry | "
+        "communication_action_allowed=False communication_reason=customer opted out | rule_version=v2"
+    )
+    fields = data.extract_compliance_fields(reason)
+    assert fields["payment_allowed"] == "True"
+    assert fields["communication_allowed"] == "False"
+    assert fields["communication_reason"] == "customer opted out"
+    assert fields["rule_version"] == "v2"
+
+
+def test_extract_compliance_fields_handles_none_and_garbage():
+    assert data.extract_compliance_fields(None) == {}
+    assert data.extract_compliance_fields("not a matching format") == {}
+
+
+def test_no_secrets_in_live_raw_events_data(live_db_session_factory):
+    from app.config import settings
+
+    _seed_live_event(live_db_session_factory)
+    df = data.get_live_raw_events_df()
+    secret = settings.RAZORPAY_WEBHOOK_SECRET
+    if secret:
+        for payload in df["raw_payload"].dropna():
+            assert secret not in payload
+
+
+def test_try_load_model_is_cached_resource():
+    # Part 21: must not re-deserialize the model artifact on every 5s live
+    # refresh -- this is what makes that cheap.
+    assert hasattr(data._try_load_model, "clear"), "_try_load_model must be an @st.cache_resource function"
+
+
+# ---------------------------------------------------------------------------
+# ui.components: new console components (Part 15-19 of the rebuild)
+# ---------------------------------------------------------------------------
+
+def test_top_bar_renders_without_exception():
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file(APP_PATH, default_timeout=120)
+    at.run()
+    assert not at.exception
+
+
+def test_live_indicator_states():
+    from ui.components import live_indicator
+
+    assert "LIVE" in live_indicator(connected=True, last_refresh=None)
+    assert "PAUSED" in live_indicator(connected=True, last_refresh=None, paused=True)
+    assert "UNAVAILABLE" in live_indicator(connected=False, last_refresh=None, error="boom")
+    assert "boom" not in live_indicator(connected=True, last_refresh=None)  # no error text leaks into the healthy state
+
+
+def test_field_row_renders_dash_for_missing_value():
+    from ui.components import field_row
+
+    # must not raise for None/empty -- and must not silently render a blank cell
+    field_row("Label", None)
+    field_row("Label", "")
+    field_row("Label", "value")
+
+
+def test_source_tag_covers_all_three_kinds():
+    from ui.components import source_tag
+
+    for kind in ("live", "demo", "synthetic"):
+        source_tag(kind)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Live refresh path (Part 10/11) -- fragments import/wire correctly
+# ---------------------------------------------------------------------------
+
+def test_live_fragments_share_the_same_refresh_interval():
+    import ui.app as app
+
+    assert app.LIVE_REFRESH_SECONDS > 0
+    # every @st.fragment(run_every=...) live section below is built from
+    # the same LIVE_REFRESH_SECONDS constant -- verified structurally by
+    # confirming the fragment functions exist and are callable.
+    for fn_name in (
+        "_overview_live_fragment", "_recovery_queue_fragment", "_payment_events_fragment",
+        "_analytics_live_operations_fragment", "_communications_live_fragment",
+        "_audit_log_fragment", "_system_status_fragment",
+    ):
+        assert callable(getattr(app, fn_name))

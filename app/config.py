@@ -27,10 +27,13 @@ class Settings:
 
     # Day 11 -- LLM-assisted communication layer (llm/). "mock" (default) makes
     # zero network calls and needs no API key; the project runs fully offline
-    # with this unset. Only "anthropic" requires ANTHROPIC_API_KEY.
+    # with this unset. "anthropic" requires ANTHROPIC_API_KEY; "gemini"
+    # requires GEMINI_API_KEY.
     LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "mock")
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
     ANTHROPIC_MODEL: str = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5")
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
     def validate_webhook_secret_present(self) -> None:
         if not self.RAZORPAY_WEBHOOK_SECRET:
