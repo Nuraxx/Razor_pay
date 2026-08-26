@@ -3413,7 +3413,7 @@ harness, not a mock — with zero exceptions.
 | **Communications** | The 3 required Day-11 LLM jobs: generated outreach microcopy (English/Hindi/Hinglish), an interactive promise-to-pay parser, and the batch-level plain-English report explanation | operational + synthetic |
 | **Revenue at Risk** *(Track-03)* | Checkout/mandate/receivable/broken-promise recovery queue, timeline, and outcomes (PENDING/RECOVERED/PARTIALLY_RECOVERED/NO_ACTION, never fabricated — see [§3a](#3a-track-03-extension-scope)); "Revenue At Risk by Intervention" reports at-risk GMV, never claims recovery from a scheduled action alone | operational |
 | **Audit Log** | Filterable (actor / status) table of every `audit_log` row the demo run produced | operational |
-| **System / Demo** | Live environment/version panel (LLM provider, `policy-v4`, `compliance-v1`, Day-8 Model B) + the interactive demo-scenario runner (including the Track-03 revenue-risk generator, [§3a](#3a-track-03-extension-scope)) | operational |
+| **System / Demo** | Live environment/version panel showing both decision paths as they actually run — subscription-linked (`policy-v4` / `compliance-v1` / Day-8 Model B) and revenue-risk (`unified-ml-v1` / `compliance-v2` / `unified_catboost_v1`), the active LLM provider (`get_llm_client()`, not a hardcoded value), and a dynamic pytest function count — + the interactive demo-scenario runner (including the Track-03 revenue-risk generator, [§3a](#3a-track-03-extension-scope)) | operational |
 
 ## Data sources
 

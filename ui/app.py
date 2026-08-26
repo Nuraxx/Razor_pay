@@ -814,7 +814,8 @@ def page_communications() -> None:
     st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
     st.markdown("##### Promise-to-Pay")
     source_tag("demo")
-    st.caption("This job parses an INBOUND customer reply — try one below (calls llm/service.py::parse_promise_to_pay directly, mock provider).")
+    _active_provider = data.get_live_system_status().get("llm_active_provider") or "—"
+    st.caption(f"This job parses an INBOUND customer reply — try one below (calls llm/service.py::parse_promise_to_pay directly, via the currently configured LLM provider: {_active_provider.upper()}).")
     reply_text = st.text_input("Customer reply", value="I'll pay Friday when salary comes, via UPI")
     if st.button("Parse reply"):
         from datetime import date
@@ -1045,14 +1046,18 @@ def _system_status_fragment() -> None:
     with cols[3]:
         kpi_card("Razorpay webhook enablement", "Unknown", "Not queryable from this backend — no Razorpay account API call is implemented")
 
-    cols2 = st.columns(4, gap="small")
+    cols2 = st.columns(5, gap="small")
     with cols2[0]:
-        kpi_card("LLM provider", status.get("llm_provider", "—").upper(), "settings.LLM_PROVIDER")
+        active_provider = status.get("llm_active_provider") or status.get("llm_provider", "—")
+        active_model = status.get("llm_active_model") or "—"
+        kpi_card("LLM provider (active)", active_provider.upper(), f"{active_model} — get_llm_client()")
     with cols2[1]:
-        kpi_card("Model", "Loaded" if status.get("model_loaded") else "Missing", "Day-8 latent-value model artifact")
+        kpi_card("Subscription model", "Loaded" if status.get("model_loaded") else "Missing", "Day-8 latent-value model artifact")
     with cols2[2]:
-        kpi_card("Last event received", data.format_ts(status.get("last_event_received")), "MAX(raw_events.received_at)")
+        kpi_card("Unified ML model", "Loaded" if status.get("unified_model_loaded") else "Missing", "model/unified_model.py artifact")
     with cols2[3]:
+        kpi_card("Last event received", data.format_ts(status.get("last_event_received")), "MAX(raw_events.received_at)")
+    with cols2[4]:
         kpi_card("Last successful processing", data.format_ts(status.get("last_successful_processing")), "latest orchestrator_final_status audit row")
 
     st.caption(f"Live refresh: enabled, every {LIVE_REFRESH_SECONDS} seconds (st.fragment(run_every=\"{LIVE_REFRESH_SECONDS}s\")).")
@@ -1061,28 +1066,49 @@ def _system_status_fragment() -> None:
 def page_system_demo() -> None:
     section_header("System / Demo", "Actual runtime state, plus an interactive recovery-flow runner over demo-generated data.")
 
-    from llm.client import MOCK_MODEL_NAME
+    from model.unified_model import MODEL_VERSION as UNIFIED_MODEL_VERSION
     from policy.compliance import COMPLIANCE_RULE_VERSION
+    from policy.compliance_v2 import COMPLIANCE_V2_RULE_VERSION
     from policy.decision_engine import MODEL_VERSION
     from policy.decision_engine_v4 import POLICY_VERSION_V4
+    from policy.revenue_recovery_policy import UNIFIED_ML_POLICY_VERSION
+
+    status = data.get_live_system_status()
 
     st.markdown("##### Live runtime status")
     _system_status_fragment()
 
     st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
     st.markdown("##### Component versions")
+    st.caption("Two decision paths run live side by side: subscription-linked failures go through the Day-8/policy-v4 path; every other domain goes through the unified ML model.")
     source_tag("live")
-    cols = st.columns(5, gap="small")
-    with cols[0]:
-        kpi_card("Environment", "Offline Demo", "No live Razorpay/LLM network calls from this UI")
-    with cols[1]:
-        kpi_card("LLM", "Mock", MOCK_MODEL_NAME)
-    with cols[2]:
-        kpi_card("Policy", POLICY_VERSION_V4, "Day-10 decision engine")
-    with cols[3]:
-        kpi_card("Compliance", COMPLIANCE_RULE_VERSION, "Day-12 gate")
-    with cols[4]:
-        kpi_card("Model", "Day-8 Model B", MODEL_VERSION)
+
+    st.markdown("**Razorpay environment & LLM**")
+    cols0 = st.columns(2, gap="small")
+    with cols0[0]:
+        kpi_card("Razorpay environment", status.get("environment", "—").upper(), "settings.RAZORPAY_ENV")
+    with cols0[1]:
+        active_provider = status.get("llm_active_provider") or status.get("llm_provider", "—")
+        active_model = status.get("llm_active_model") or "—"
+        kpi_card("LLM provider (active)", active_provider.upper(), f"{active_model} — settings.LLM_PROVIDER={status.get('llm_provider', '—')}")
+
+    st.markdown("**Subscription-linked path** (`payment_failed` / `subscription_payment_failed`)")
+    cols1 = st.columns(3, gap="small")
+    with cols1[0]:
+        kpi_card("Policy", POLICY_VERSION_V4, "policy/decision_engine_v4.py")
+    with cols1[1]:
+        kpi_card("Compliance", COMPLIANCE_RULE_VERSION, "policy/compliance.py")
+    with cols1[2]:
+        kpi_card("Model", "Loaded" if status.get("model_loaded") else "Missing", MODEL_VERSION)
+
+    st.markdown("**Revenue-risk path** (checkout / mandate / receivable / promise-broken / payment-link)")
+    cols2 = st.columns(3, gap="small")
+    with cols2[0]:
+        kpi_card("Policy", UNIFIED_ML_POLICY_VERSION, "policy/revenue_recovery_policy.py — ML candidate, policy-gated")
+    with cols2[1]:
+        kpi_card("Compliance", COMPLIANCE_V2_RULE_VERSION, "policy/compliance_v2.py")
+    with cols2[2]:
+        kpi_card("Model", "Loaded" if status.get("unified_model_loaded") else "Missing", UNIFIED_MODEL_VERSION)
 
     st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
     st.markdown("##### Test suite")
@@ -1097,7 +1123,8 @@ def page_system_demo() -> None:
     st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
     st.markdown("##### Interactive demo — Run Demo Event")
     source_tag("demo")
-    st.caption("Uses recovery/orchestrator.py directly, over a throwaway in-memory database. No live Razorpay actions are ever attempted.")
+    _demo_provider = status.get("llm_active_provider") or "—"
+    st.caption(f"Uses recovery/orchestrator.py directly, over a throwaway in-memory database. No live Razorpay actions are ever attempted — but the LLM call is real, via the currently configured provider ({_demo_provider.upper()}).")
     scenario = st.selectbox("Scenario", list(data.DEMO_SCENARIOS.keys()))
     if st.button("Run recovery"):
         model = data._try_load_model()
@@ -1160,7 +1187,8 @@ def page_system_demo() -> None:
     source_tag("demo")
     st.caption(
         "Uses recovery/revenue_orchestrator.py directly (plus the existing orchestrator for the payment/subscription "
-        "kinds), over a throwaway in-memory database — never the real Razorpay-webhook-backed DB. No live actions are ever attempted."
+        "kinds), over a throwaway in-memory database — never the real Razorpay-webhook-backed DB. No Razorpay actions "
+        f"are ever attempted, but LLM calls are real, via the currently configured provider ({_demo_provider.upper()})."
     )
     if st.button("Generate demo revenue-risk events"):
         model = data._try_load_model()

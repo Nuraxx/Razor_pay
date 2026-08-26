@@ -51,6 +51,12 @@ _DEFAULT_ACTION_DELAY = timedelta(hours=1)
 # decide_for_revenue_risk_event below.
 _ML_SKIP_CANDIDATES = frozenset({NO_ACTION, "wait"})
 
+# Single source of truth for the revenue-risk-domain policy_version tag --
+# imported by the UI (System / Demo page) rather than duplicated as a literal,
+# so the displayed version can never drift from what decisions are actually
+# persisted with.
+UNIFIED_ML_POLICY_VERSION = "unified-ml-v1"
+
 
 def _decide_checkout(*, event_id, customer_ref, occurred_at, amount, domain_context) -> DomainDecision:
     result = decide_checkout_recovery(
@@ -187,7 +193,7 @@ def _decide_unified_ml(*, event_type, event_id, customer_ref, occurred_at, amoun
         classification_bucket=(domain_context.get("classification_bucket") or event_type),
         selected_candidate_type=best["candidate_type"],
         selected_candidate_datetime=(occurred_at + _DEFAULT_ACTION_DELAY),
-        policy_version="unified-ml-v1",
+        policy_version=UNIFIED_ML_POLICY_VERSION,
         decision_reason=f"unified_model_score={best['predicted_recovery_probability']:.3f}; candidate={best['candidate_type']}",
         decision_source="ml_unified_v1",
         predicted_recovery_probability=best["predicted_recovery_probability"],

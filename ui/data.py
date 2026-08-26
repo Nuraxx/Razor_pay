@@ -16,9 +16,14 @@ THREE distinct data sources, never mixed:
                            failure events (data/raw/failure_events.csv +
                            subscriptions.csv), written to a THROWAWAY
                            in-memory SQLite DB, using the real trained
-                           Day-8 Model B and the Day-11 mock LLM provider.
-                           Powers the "System / Demo" page's interactive
-                           scenario runner only -- never labeled "live".
+                           Day-8 Model B. The LLM call is NOT mocked --
+                           it goes through the same get_llm_client() every
+                           live webhook uses, i.e. whatever settings.LLM_PROVIDER
+                           is currently configured to (mock/anthropic/gemini/ollama).
+                           Only the events/database are throwaway/synthetic;
+                           the LLM request itself is real. Powers the
+                           "System / Demo" page's interactive scenario
+                           runner only -- never labeled "live".
   LIVE DATABASE          -- read-only queries against the REAL,
                            Razorpay-webhook-backed SQLite file at
                            settings.DATABASE_URL (see the "LIVE DATABASE"
@@ -47,8 +52,9 @@ from sqlalchemy.pool import StaticPool
 from app.db import Base
 from app.models import AuditLog, FailureEvent, LLMInvocation, PolicyDecision, PromiseToPay, RawEvent, RevenueRiskEvent
 from classification.rules import classify
-from llm.client import LLMClient, LLMProviderError
+from llm.client import LLMClient, LLMProviderError, get_llm_client
 from model.candidate_preprocessing import PROJECT_ROOT
+from model.unified_model import get_live_unified_model
 from policy.decision_engine import EVENT_FEATURE_KEYS
 from recovery.orchestrator import RecoveryEventInput, orchestrate_recovery
 from recovery.promise_service import record_customer_reply
@@ -287,6 +293,19 @@ def get_live_system_status() -> dict:
     actually verify it")."""
     from app.config import settings
 
+    # llm_provider is the raw config value; llm_active_provider/llm_active_model
+    # reflect what get_llm_client() will ACTUALLY hand back this call -- these
+    # can differ from config if e.g. LLM_PROVIDER=anthropic but no API key is
+    # set, in which case get_llm_client() silently falls back to mock. Never
+    # let the UI claim a configured provider is active without checking.
+    try:
+        _live_llm_client = get_llm_client()
+        llm_active_provider = _live_llm_client.provider_name
+        llm_active_model = _live_llm_client.model_name
+    except Exception:  # noqa: BLE001 -- a status probe must never crash the dashboard
+        llm_active_provider = None
+        llm_active_model = None
+
     status = {
         "environment": settings.RAZORPAY_ENV,
         "database_connected": False,
@@ -295,7 +314,10 @@ def get_live_system_status() -> dict:
         "fastapi_error": None,
         "webhook_secret_configured": bool(settings.RAZORPAY_WEBHOOK_SECRET),
         "llm_provider": settings.LLM_PROVIDER,
+        "llm_active_provider": llm_active_provider,
+        "llm_active_model": llm_active_model,
         "model_loaded": _try_load_model() is not None,
+        "unified_model_loaded": get_live_unified_model() is not None,
         "last_event_received": None,
         "last_successful_processing": None,
     }
@@ -1166,7 +1188,7 @@ def get_llm_invocations_df(db, task_name: str | None = None) -> pd.DataFrame:
 # REAL pytest run on demand, for a fully live number when the user wants one.
 # ---------------------------------------------------------------------------
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=60)
 def count_test_functions() -> int:
     tests_dir = PROJECT_ROOT / "tests"
     if not tests_dir.exists():
