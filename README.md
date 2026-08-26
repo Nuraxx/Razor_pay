@@ -2,18 +2,30 @@
 
 **Razorpay AI Buildathon — Track 3: AI Revenue Recovery**
 
+**Current status:** 891 tests passing (`pytest tests -q`), full test count
+current as of the most recent unified-ML-generalization audit pass — this is a
+point-in-time figure, not a claim this document keeps itself in sync with;
+verify with the command above if it matters for your purposes.
+
 An offline-verifiable prototype that replaces Razorpay Subscriptions' blind
 fixed-interval retry (retry once/day for 3 days, regardless of *why* a charge
 failed) with a per-failure decision: classify the failure reason
 deterministically, score candidate retry times with a calibrated model,
 enforce a deterministic compliance gate, generate outreach copy and parse
-promise-to-pay replies with an LLM (exactly 3 jobs, never a decision-maker),
-and report recovered-₹ against Razorpay's own real baseline on a held-out
-synthetic batch.
+promise-to-pay replies with an LLM (3 required jobs plus one optional
+voice-script extension, never a decision-maker), and report recovered-₹
+against Razorpay's own real baseline on a held-out synthetic batch.
 
 Scope, per the original project specification
 (`~/Downloads/razorpay-track3-project-specification.md`): **Razorpay
-Subscriptions only, `insufficient_fund` decline reason only.** Everything
+Subscriptions only, `insufficient_fund` decline reason only.** That original
+scope is still fully intact and untouched — the system was later extended
+("Track-03") into a broader revenue-recovery platform covering checkout
+abandonment, mandate retry sequencing, B2B receivables, a promise-to-pay
+lifecycle with an automatic broken-promise scheduler, Hinglish/voice
+outreach, and a real Razorpay `payment.captured` reconciliation loop that
+closes a recovery case only on an authoritative payment confirmation — see
+[§3a](#3a-track-03-extension-scope) for exactly what that added. Everything
 below this line is a single integrated system, not a day-by-day changelog —
 the full build diary is preserved in the [Appendix](#appendix-day-by-day-development-log)
 for anyone who wants the detailed, dated reasoning behind each decision.
@@ -66,6 +78,150 @@ framing.
   clearly and consistently labeled as such everywhere it appears in reports
   and the dashboard — see [§16 Evaluation](#16-evaluation) and
   [§19 Known limitations](#19-known-limitations).
+
+## 3a. Track-03 extension scope
+
+Everything in §3 above is the ORIGINAL project spec's scope and remains
+completely unchanged and untouched. On top of it, the system was later
+extended into a broader revenue-recovery platform, reusing the same
+recovery engine, compliance gate, audit trail, and dashboard rather than
+building six separate demos:
+
+- **Checkout abandonment**, **mandate retry sequencing**, and **B2B
+  receivables** recovery (`policy/checkout_rules.py`, `policy/mandate_rules.py`,
+  `policy/receivables_rules.py`), each with its own deterministic rule
+  module, dispatched through one unified policy entry point
+  (`policy/revenue_recovery_policy.py`) and one unified, generalized
+  compliance gate (`policy/compliance_v2.py`, adding a third `HUMAN_REVIEW`
+  verdict for cases like a disputed invoice) alongside the original,
+  byte-for-byte-unchanged `policy/compliance.py`.
+- **Promise-to-pay lifecycle**: a new `PROMISED → FULFILLED/BROKEN/CANCELLED`
+  dimension (`recovery/promise_lifecycle.py`) layered on top of the original
+  promise *validation* status (`policy/promise_to_pay.py`, unchanged). An
+  automatic, in-process background scheduler (`recovery/scheduler.py`, no
+  Celery/Redis) periodically detects broken promises and routes them back
+  through the same recovery engine — real, tested end to end, but explicitly
+  **not production-grade** (a single-process `asyncio` loop, no distributed
+  locking).
+- **Hinglish outreach** (a `language` prompt parameter, no new
+  infrastructure) and an **optional 4th LLM job**, `voice_script_generation`
+  (§5), producing a script for a `MockVoiceProvider` — no real telephony
+  integration exists; no voice call is ever actually placed.
+- **Payment recovery confirmation closed loop**
+  (`recovery/payment_reconciliation.py`): a real Razorpay `payment.captured`
+  webhook can now reconcile against a PENDING recovery case and mark it
+  `RECOVERED`/`PARTIALLY_RECOVERED` with the authoritative confirmed amount
+  — the only thing that is ever allowed to do so. A scheduled retry, a sent
+  message, an LLM result, or a customer promise never fabricates a
+  recovered outcome.
+
+All of the above is additive: the original `payment_failed` webhook →
+classify → decide → compliance → recover pipeline (§4 below) is unchanged
+and independently tested, and every new domain has its own test file under
+`tests/`.
+
+## 3b. Gap analysis vs. Razorpay's own existing recovery products
+
+Razorpay already ships real recovery tooling this project does not attempt
+to replace: Payment Links Reminders, the Subscriptions core T+3 retry, UPI
+Autopay's Intelligent Retry Engine, Failed Payment Recovery, and — most
+relevant here — the 2026 **Agent Studio "Subscription Recovery"** and
+"Abandoned Cart Conversion" agents (built on Anthropic's Claude Agent SDK
+per Razorpay's own product page). This project is positioned as the
+**orchestration/audit layer that could sit in front of** those agents, not
+a competing rebuild of them. Four specific gaps motivate that framing,
+none of which are met by Razorpay's own published product descriptions as
+of this writing:
+
+1. **No cross-surface orchestration** — every Razorpay recovery tool is
+   scoped to its own product line; nothing publicly described shares one
+   customer-state layer across Payment Links, Subscriptions, UPI Autopay,
+   and the newer agents the way this project's single `RecoveryOutcome`/
+   audit trail does across all of its own domains.
+2. **No promise-to-pay object** — no Razorpay product describes capturing
+   a customer's stated commitment ("I'll pay Friday") as a structured,
+   dated, trackable record distinct from a fixed retry timer.
+3. **No published measurement layer** — Razorpay's own recovery-product
+   copy is qualitative ("protect your revenue"); none publish a
+   ₹-recovered / recovery-rate / cost-per-recovery methodology of the kind
+   in [§16](#16-evaluation).
+4. **No disclosed, demoable compliance gate with its own failing-grade
+   metric** — this project's compliance gate can visibly *refuse* an
+   action (contact-hours, attempt caps, opt-out) and is itself measured via
+   an unnecessary-intervention rate, rather than being an internal,
+   undisclosed implementation detail.
+
+This is a narrow, precise claim, not a category-level one: Razorpay's own
+Agent Studio agents may already address some of this in ways not disclosed
+publicly. See the original specification's Section 5 for the full sourcing
+behind each gap.
+
+## 3c. Unified ML generalization
+
+On top of §3a's rule-based Track-03 dispatch, a single ML model
+(`model/unified_model.py`, `model_version="unified_catboost_v1"`, a real
+`catboost.CatBoostClassifier` — not a heuristic, and not the
+sklearn-LogisticRegression placeholder an earlier pass had wired in under
+that same name) now scores candidate interventions across **all five**
+revenue-risk domains from one shared feature schema and one shared training
+pipeline:
+
+- **Domains:** `payment_failed` (Payment Link / no-subscription only — a
+  genuine subscription `payment_failed` keeps using the original Model B
+  above, unmodified), `checkout_abandoned`, `mandate_failed`,
+  `receivable_overdue`, `promise_to_pay_broken`.
+- **Candidate vocabularies are the SAME strings each domain's existing rule
+  module already used** (`policy/checkout_rules.py`,
+  `policy/mandate_rules.py`, `policy/receivables_rules.py`,
+  `policy/promise_broken_rules.py`, `policy/one_time_payment_rules.py`) —
+  e.g. `attempt_1`/`attempt_2`/`final_attempt` for mandates,
+  `friendly_reminder`/`payment_request`/`promise_to_pay_request`/`escalation`
+  for receivables. An earlier pass had invented a parallel, unrelated
+  vocabulary (e.g. `retry_1_day` for Payment Links, which falsely implied an
+  automatic retry Razorpay cannot actually perform for a one-time payment);
+  that was a real, fixed bug, not a design choice.
+- **Policy boundary:** the rule-based decider for each domain is always
+  computed first and is the authoritative **eligibility gate**
+  (opted-out/unmapped/disputed/terminal/not-yet-actionable). The unified
+  model is *also* always consulted (when its artifact is loaded) —
+  "should ML evaluate this event" and "should policy act on ML's
+  recommendation" are deliberately two different questions
+  (`policy/revenue_recovery_policy.py::decide_for_revenue_risk_event`).
+  Three distinct, dashboard-visible outcomes result:
+  - **ML USED** — the eligibility gate found an action warranted; ML's
+    top-scored candidate is the final decision (`decision_source="ml_unified_v1"`).
+  - **ML CONSULTED, overridden by policy** — ML ran and produced a real
+    score, but the eligibility gate (or a mandatory human-review
+    escalation, e.g. a disputed receivable) is what actually won; ML's
+    recommendation/score is still recorded in `decision_reason`
+    (`ml_consulted=True ml_recommendation=... ml_score=...`) and in the
+    `predicted_recovery_probability`/`model_version` columns, never
+    silently discarded.
+  - **ML FALLBACK** — the artifact genuinely isn't loaded (missing/corrupt);
+    the deterministic rule decider decides alone, `ml_consulted=False`.
+- **Training:** `./venv/bin/python -m model.train_unified_model` — a
+  synthetic dataset (`model/unified_model.py::_make_training_data`, all 5
+  domains, a genuine per-entity customer-segment × candidate-urgency
+  interaction so the "best" candidate actually varies per entity, not just
+  per domain) split 70/15/15 **at the entity level, independently per
+  domain** (`_entity_level_split` — no entity ever appears in two splits,
+  verified by test), then fit on TRAIN only (validation used for CatBoost
+  early stopping; TEST touched only for the metrics reported below and in
+  `model/reports/unified_model_training_report.json`).
+- **Artifact:** `model/artifacts/unified_model.joblib`, loaded through one
+  process-wide cached function, `model/unified_model.py::get_live_unified_model()`
+  — the SAME function `app/main.py` (webhook handler + startup), the promise
+  sweep (`recovery/scheduler.py`), and the demo generator
+  (`recovery/demo_generator.py`) all call; there is no second, parallel
+  inference implementation anywhere. A startup log line
+  (`Unified ML model loaded: model=unified_catboost_v1 artifact=...`) or a
+  fallback warning if the artifact is missing confirms which happened.
+- **Held-out evaluation:** `./venv/bin/python -m evaluation.evaluate_unified_model`
+  — see the new subsection under [§16](#16-evaluation). Honest headline: a
+  **marginal, mixed** lift over a naive fixed-candidate baseline (+0.4%
+  overall net value; better in 1 of 4 multi-candidate domains, worse in 2,
+  flat in 1) — this is disclosed, not hidden; see
+  [§19](#19-known-limitations).
 
 ## 4. Architecture
 
@@ -122,6 +278,35 @@ existed (every stage is independently idempotent). See
 [§17](#17-failure-handling) and [§19](#19-known-limitations) for the exact
 boundary cases this was verified against.
 
+**The diagram above is the ORIGINAL subscription-`payment_failed`-only
+path.** The Track-03 revenue-risk domains (§3a) — checkout_abandoned,
+mandate_failed, receivable_overdue, promise_to_pay_broken, and Payment-Link
+`payment_failed_no_subscription` — run through a parallel, equally-real
+path that reuses the same webhook receiver, audit log, and dashboard but a
+different orchestrator and policy dispatcher:
+
+```
+raw_events (same table, same idempotency)
+        │
+recovery/webhook_pipeline.py::process_raw_event
+        │  (subscription_id present -> diagram above, unchanged)
+        │  (subscription_id ABSENT but payment_id+amount present ->)
+        ▼
+RevenueRiskEvent (payment_failed_no_subscription / checkout_abandoned /
+                  mandate_failed / receivable_overdue / promise_to_pay_broken)
+        │
+recovery/revenue_orchestrator.py::orchestrate_revenue_event
+        │
+policy/revenue_recovery_policy.py::decide_for_revenue_risk_event
+        │  rule-based eligibility decider (always) + unified ML (always, §3c)
+        ▼
+policy/compliance_v2.py (ALLOWED / BLOCKED / HUMAN_REVIEW)
+        │
+llm/service.py (Ollama/mock/etc — communication only, ONLY if allowed)
+        │
+audit_log + RecoveryOutcome (PENDING until an authoritative payment.captured)
+```
+
 ## 5. End-to-end workflow
 
 1. **Detect** — a Razorpay Subscriptions webhook fires on a failed charge.
@@ -169,8 +354,12 @@ final audit report §3).
 
 FastAPI + Uvicorn (webhook receiver), SQLAlchemy + SQLite (event store,
 audit log — file at `data/recovery_agent.db`), scikit-learn (linear
-baseline) + CatBoost (main candidate-time value model), Anthropic Claude API
-(the 3 LLM jobs, via `anthropic` SDK — offline mock provider by default),
+baseline) + CatBoost (both the original subscription-only Model B and the
+unified cross-domain model, §3c), an LLM provider abstraction
+(`llm/client.py`) supporting `mock` (offline, default), `anthropic` (Claude
+API), `gemini` (Google Gemini API), or **`ollama`** (a locally-running
+`qwen3:14b`, no API key or external network call — the provider this
+working copy runs live communication through; see §11) for the LLM jobs,
 Streamlit + Plotly (dashboard), pytest (test suite), zrok (webhook tunnel —
 Razorpay blacklists `ngrok.io`, see [§10](#10-razorpay-test-mode-setup)).
 Exact pinned versions: `requirements.txt`.
@@ -201,6 +390,8 @@ configuration — see [§9](#9-offline-mode).
 | `RAZORPAY_WEBHOOK_SECRET` | HMAC verification (`app/webhook_security.py`) | Configured in local `.env`; `.env.example` ships a placeholder value, must be replaced with the Dashboard-issued secret for real deliveries | Required to receive and verify a **real** Razorpay webhook. Not required for tests, demos, or the dashboard — all run fully offline against synthetic/mock data. |
 | zrok token / tunnel | Exposes local FastAPI to a public HTTPS URL Razorpay's Dashboard will accept (`ngrok.io` is explicitly blacklisted by Razorpay) | Not stored in this repo — a per-developer, per-session manual step | Required only for a live webhook demo (§10). Not required for anything else. |
 | `ANTHROPIC_API_KEY` | `llm/client.py::AnthropicLLMClient`, only reached when `LLM_PROVIDER=anthropic` | Empty in `.env.example`; `LLM_PROVIDER` defaults to `mock`, which never reads this value | Required only to see real Claude-generated output instead of the deterministic mock. Test suite, demos, and dashboard all default to mock and need no key. |
+| `GEMINI_API_KEY` | `llm/client.py::GeminiLLMClient`, only reached when `LLM_PROVIDER=gemini` | Empty in `.env.example`; free-tier quota is small and can exhaust mid-demo, in which case the deterministic fallback is used and logged — never treated as a bug | Required only to see real Gemini-generated output. Test suite always forces `LLM_PROVIDER=mock` regardless of `.env` (`tests/conftest.py::_force_mock_llm_provider_by_default`), so it never affects test results either way. |
+| `OLLAMA_BASE_URL` / `OLLAMA_MODEL` | `llm/client.py::OllamaLLMClient`, only reached when `LLM_PROVIDER=ollama` | Defaults to `http://localhost:11434` / `qwen3:14b` in `.env.example` — no API key of any kind | Required only to use a locally-running Ollama server instead of a remote provider. Requires `ollama serve` running and the model already pulled (`ollama pull qwen3:14b`); reachability/model-missing failures fall back to the same deterministic mock output as any other provider failure. Test suite always forces `LLM_PROVIDER=mock`, so it never makes a real local call either. |
 | Trained model artifacts | `model/latent_target_artifacts/`, `model/artifacts/`, etc. | **Not committed** (`.gitignore` excludes all `model/*_artifacts/` and `evaluation/reports/`) — present only in this working copy because training/evaluation were already run here | **Required manual step on a fresh clone**: run `model/train.py`, `model/train_candidate_model.py`, `model/train_ranking_model.py`, `model/train_latent_target_model.py`, then the matching `evaluation/evaluate_*.py` scripts, before the dashboard/demo will show real (non-fallback) model output. The orchestrator degrades gracefully if skipped (falls back to the rule-based tier), but the "current model" evaluation numbers in §16 won't exist until these are run. |
 | Generated synthetic dataset | `data/raw/*.csv`, `data/processed/*.csv` | Present and committed — the dataset itself, unlike the trained artifacts above, is tracked in git | Nothing further needed; regenerate via `data/generate_synthetic_dataset.py` / `data/generate_counterfactual_dataset.py` only if you want a fresh draw |
 
@@ -255,9 +446,13 @@ Full troubleshooting table preserved in the
 
 ```bash
 # .env
-LLM_PROVIDER=mock          # default — offline, deterministic, no key needed
+LLM_PROVIDER=mock          # mock (default, offline, no key) | anthropic | gemini | ollama
 ANTHROPIC_API_KEY=         # only read when LLM_PROVIDER=anthropic
 ANTHROPIC_MODEL=claude-sonnet-5
+GEMINI_API_KEY=            # only read when LLM_PROVIDER=gemini
+GEMINI_MODEL=gemini-3.6-flash
+OLLAMA_BASE_URL=http://localhost:11434   # only used when LLM_PROVIDER=ollama; no API key
+OLLAMA_MODEL=qwen3:14b                   # must already be pulled locally (`ollama pull qwen3:14b`)
 ```
 
 Exactly **three** LLM jobs exist anywhere in this codebase
@@ -320,7 +515,10 @@ not just `-m`).
 ./venv/bin/python -m pytest tests/ -v
 ```
 
-**432 tests, 432 passing** (verified by direct execution in this FIX pass).
+**891 tests, 891 passing** (verified by direct execution in the unified-ML
+generalization pass; the historical "432/432" figure below in §17 predates
+Track-03 entirely and is kept only as a point-in-time record — always
+trust `pytest tests -q`'s own output over any number in this document).
 Coverage includes, per boundary: malformed webhook body, invalid/missing/
 tampered signature, duplicate webhook delivery, missing required fields, an
 unsupported event type or a missing subscription/payment entity, a
@@ -331,7 +529,13 @@ implausible predictions, prediction exceptions), 6 LLM failure modes per job
 JSON, unexpected exception), every compliance rule independently, promise-to-pay
 validation/persistence/idempotency/supersession and its orchestrator-level
 override, hard-decline communication, LLM-vs-policy independence, and
-no-secrets-in-logs. `pip check` is clean.
+no-secrets-in-logs, PLUS (added in the unified-ML pass) unified feature
+construction, all-five-domain candidate generation, entity-split integrity,
+no-target-leakage, artifact loading + missing-artifact fallback, the
+ML-consulted-but-overridden policy boundary, and dashboard ML-status
+correctness (`tests/test_unified_model.py`,
+`tests/test_revenue_recovery_policy.py`, `tests/test_revenue_ui.py`).
+`pip check` is clean.
 
 ## 16. Evaluation
 
@@ -511,11 +715,38 @@ are reported as honest negative results, not hidden), and the full
 diagnostic history are in the Appendix (Days 4, 6–10) and in
 `evaluation/reports/*.json`.
 
+## 16a. Unified ML held-out evaluation
+
+Separate from §16's Model-B/subscription-only counterfactual evaluation
+above: `./venv/bin/python -m evaluation.evaluate_unified_model` backtests
+the unified model (§3c) against a naive fixed-candidate baseline on its own
+held-out **TEST** entities (never touched during training) — again entirely
+**SYNTHETIC, SIMULATED** data; `recovered_amount` below means "the
+simulated outcome for the candidate actually selected," not a real
+Razorpay confirmation.
+
+| Domain | ML recovery rate | ML net ₹ (test split) | vs. naive fixed-candidate baseline |
+|---|---|---|---|
+| payment_failed (Payment Link) | 25.0% | ₹46,925 | tied (only 1 truthful candidate exists) |
+| checkout_abandoned | 33.3% | ₹80,014 | **−7.7%** |
+| mandate_failed | 52.8% | ₹122,031 | **−9.5%** |
+| receivable_overdue | 38.9% | ₹89,440 | **+16.7%** |
+| promise_to_pay_broken | 41.7% | ₹130,172 | ~flat |
+| **Overall** | 42.6% | ₹468,582 | **+0.4%** (₹1,892) |
+
+**Honest verdict: the unified model does NOT clearly beat the naive
+baseline.** The overall lift is marginal and the per-domain picture is
+mixed — worse in 2 of 4 multi-candidate domains, better in 1, flat in 1.
+Held-out test AUC is 0.550 (train 0.709, validation 0.583 — the gap is
+expected generalization behavior on ~2,350 synthetic training rows with a
+deliberately modest true effect size, not evidence of leakage; see §3c and
+§19). This is disclosed as-is, not tuned or cherry-picked to look better.
+
 ## 17. Failure handling
 
 Every boundary below was verified in this FIX pass — either by the
-existing test suite (432/432 passing) or by direct execution against the
-running system:
+existing test suite (432/432 passing at the time — see the current count in
+§15) or by direct execution against the running system:
 
 | Boundary | Handling | Verified |
 |---|---|---|
@@ -639,6 +870,24 @@ pytest output as its designed function.
    VALID/LOW_CONFIDENCE/INVALID_DATE/EXPIRED/SUPERSEDED — never a
    FULFILLED/BROKEN state — since this project makes no live Razorpay
    payment call to actually observe one against.
+10. **The unified ML model (§3c) does not clearly beat a naive
+    fixed-candidate baseline** on its own held-out synthetic test split —
+    see §16a for the honest, mixed per-domain numbers. Do not cite this as
+    an ML win.
+11. **Every real, live Razorpay Test Mode Payment Link failure verified
+    against this system so far returned a generic, classifier-unrecognized
+    `error_reason` (`"payment_failed"`)** — real cards were used, but none
+    triggered a specific reason like `insufficient_fund`. The unified
+    model is genuinely CONSULTED for these (proven live, `ml_consulted=True`
+    with a real score in the audit trail), but the eligibility gate
+    correctly overrides it to `NO_ACTION`, so the "ML USED" (ML's own
+    candidate is final) state has not yet been observed live on this
+    specific domain with real data — only via the trained artifact
+    directly and via the other 4 domains, which have.
+12. **`LLM_PROVIDER=ollama` in the local `.env` is this session's working
+    configuration**, not a hardcoded requirement — `mock`/`anthropic`/
+    `gemini` remain fully supported (§11); the mock provider stays the
+    default in `.env.example` and in every test.
 
 ## 20. Final feature status
 
@@ -659,6 +908,9 @@ pytest output as its designed function.
 | End-to-end automatic webhook→orchestration wiring | **DONE** (FIX #2) — a stored, verified webhook event continues automatically into classification + full orchestration in the same request; `scripts/reprocess_raw_events.py` remains available for manual re-processing of a failed/pre-fix event. |
 | Streamlit dashboard | **DONE** — 7 pages, verified via `AppTest` and direct execution, including promise-to-pay and hard-decline-communication detail |
 | Failure-mode demonstrations (Section 13 of the spec) | **DONE** — all 5 required scenarios (insufficient_fund recovery, hard decline + nudge, promise-to-pay override, LLM failure, webhook ingestion) plus a bonus opt-out scenario, demonstrated and tested |
+| Unified ML model across all 5 revenue-risk domains (§3c) | **DONE** — real trained `CatBoostClassifier`, live-loaded via one cached function, real inference verified live for all 5 domains including a real Payment Link webhook; does NOT clearly beat a naive baseline on held-out data (§16a, §19 item 10) — disclosed, not hidden |
+| Payment Link / one-time-payment generalization (`subscription_id=NULL`) | **DONE** — no longer dead-ends; reaches classification, the unified model (always consulted), policy, and compliance. Verified against 3 real Razorpay Test Mode Payment Link failures |
+| Dashboard ML-status distinction (USED / CONSULTED_OVERRIDDEN / FALLBACK) | **DONE** — `ui/data.py::get_live_revenue_pipeline_snapshot`, Overview's "Latest revenue-risk event" card |
 
 ## 21. Manual setup remaining
 
@@ -668,9 +920,10 @@ beyond §7):
 - Generate real Razorpay Test Mode API keys and a webhook secret, and run
   a zrok tunnel, if you want to demonstrate a genuine live webhook delivery
   (§10). Not required for tests, demos, or the dashboard.
-- Set `LLM_PROVIDER=anthropic` and a real `ANTHROPIC_API_KEY` if you want
-  genuinely LLM-generated (rather than deterministic mock) outreach copy,
-  promise-to-pay parsing, or report narration.
+- Set `LLM_PROVIDER=anthropic`/`gemini` with a real API key, or
+  `LLM_PROVIDER=ollama` with a local Ollama server running (no API key —
+  see §11), if you want genuinely LLM-generated (rather than deterministic
+  mock) outreach copy, promise-to-pay parsing, or report narration.
 - McNemar's test, the bootstrap CI, Razorpay fee-take modeling, and the
   Fixed Retry/Rule-Based baseline-fidelity fix are all now implemented
   (§16, §19 items 2–3); a real per-instrument fee schedule and a genuinely
@@ -2699,16 +2952,20 @@ between, and asserting the two decisions are bit-for-bit identical.
 3. **Generate the plain-English batch-level explanation** in the final
    report.
 
-These are the only three jobs. No LLM function classifies a failure,
-selects retry timing, makes a compliance decision, overrides policy, or
-decides whether a payment should be retried — all five remain exactly
-where Days 2–10 put them.
+These are the only three jobs the ORIGINAL specification calls for, and
+that boundary is unchanged: no LLM function classifies a failure, selects
+retry timing, makes a compliance decision, overrides policy, or decides
+whether a payment should be retried — all five remain exactly where Days
+2–10 put them. The Track-03 extension ([§3a](#3a-track-03-extension-scope))
+added exactly one further, explicitly OPTIONAL job on top — `voice_script_generation`,
+generating a spoken script for `MockVoiceProvider` (no real telephony) —
+under the exact same boundary: it produces text only, never a decision.
 
 ## Architecture (`llm/`)
 
 ```
 llm/
-    client.py    # MockLLMClient (offline, default) + AnthropicLLMClient, selected by LLM_PROVIDER
+    client.py    # MockLLMClient (offline, default) + AnthropicLLMClient + GeminiLLMClient + OllamaLLMClient (local Qwen3), selected by LLM_PROVIDER
     prompts.py   # versioned system/user prompts per job + the mock response router
     schemas.py   # Pydantic output schemas + the LLMResult envelope
     service.py   # orchestration: build prompt → call client → validate → fallback → audit
@@ -2724,10 +2981,10 @@ Every job returns an `LLMResult` (`llm/schemas.py`):
 
 ```python
 class LLMResult(BaseModel):
-    task_name: Literal["outreach_microcopy", "promise_to_pay_parse", "batch_explanation"]
+    task_name: Literal["outreach_microcopy", "promise_to_pay_parse", "batch_explanation", "voice_script_generation"]
     model_name: str
     prompt_version: str
-    provider: Literal["mock", "anthropic"]
+    provider: Literal["mock", "anthropic", "gemini", "ollama"]
     success: bool
     structured_result: dict | None   # validated schema's .model_dump(), or the deterministic fallback
     error_type: str | None
@@ -3153,9 +3410,10 @@ harness, not a mock — with zero exceptions.
 | **Recovery Queue** | Merchant-style table of every orchestrated event; select a row to open its full decision timeline + retry-candidate scoring inline | operational |
 | **Payment Events** | Filterable browser over the raw generated `failure_events.csv` / `subscriptions.csv` dataset | synthetic |
 | **Analytics** | 7 charts: recovery value & rate by policy, candidate selection distribution, classification distribution, compliance outcomes, LLM success/fallback rate, audit volume by actor | mixed, each tagged |
-| **Communications** | The 3 Day-11 LLM jobs: generated outreach microcopy (English/Hindi/Hinglish), an interactive promise-to-pay parser, and the batch-level plain-English report explanation | operational + synthetic |
+| **Communications** | The 3 required Day-11 LLM jobs: generated outreach microcopy (English/Hindi/Hinglish), an interactive promise-to-pay parser, and the batch-level plain-English report explanation | operational + synthetic |
+| **Revenue at Risk** *(Track-03)* | Checkout/mandate/receivable/broken-promise recovery queue, timeline, and outcomes (PENDING/RECOVERED/PARTIALLY_RECOVERED/NO_ACTION, never fabricated — see [§3a](#3a-track-03-extension-scope)); "Revenue At Risk by Intervention" reports at-risk GMV, never claims recovery from a scheduled action alone | operational |
 | **Audit Log** | Filterable (actor / status) table of every `audit_log` row the demo run produced | operational |
-| **System / Demo** | Live environment/version panel (LLM provider, `policy-v4`, `compliance-v1`, Day-8 Model B) + dynamic test count + the interactive 4-scenario demo runner | operational |
+| **System / Demo** | Live environment/version panel (LLM provider, `policy-v4`, `compliance-v1`, Day-8 Model B) + the interactive demo-scenario runner (including the Track-03 revenue-risk generator, [§3a](#3a-track-03-extension-scope)) | operational |
 
 ## Data sources
 

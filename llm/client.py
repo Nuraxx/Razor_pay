@@ -2,7 +2,7 @@
 Day-11 LLM provider abstraction.
 
 Deliberately minimal -- no LangChain, no LangGraph, no agent framework, no
-autonomous tool use (brief section 2). Three providers, selected by the
+autonomous tool use (brief section 2). Four providers, selected by the
 `LLM_PROVIDER` env var (`app/config.py::settings.LLM_PROVIDER`):
 
   "mock"      (default) -- deterministic, offline, makes zero network calls.
@@ -17,8 +17,12 @@ autonomous tool use (brief section 2). Three providers, selected by the
                ("no longer available to new users") for newly-created API
                keys; verify what your own key can call via
                `client.models.list()` before assuming any specific model ID.
+  "ollama"    -- local inference via a locally-running Ollama server's HTTP
+               API (no SDK, no API key -- see OllamaLLMClient below). Model
+               defaults to `qwen3:14b` (OLLAMA_MODEL), server defaults to
+               `http://localhost:11434` (OLLAMA_BASE_URL).
 
-All three implement the same `LLMClient.complete(system_prompt, user_prompt) ->
+All four implement the same `LLMClient.complete(system_prompt, user_prompt) ->
 str` interface, so `llm/service.py` never needs to know which one it's
 talking to.
 
@@ -45,6 +49,8 @@ from app.logging_config import log
 
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5"
 DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
+DEFAULT_OLLAMA_MODEL = "qwen3:14b"
+DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 MOCK_MODEL_NAME = "mock-llm-v1"
 
 # HTTP-level request timeout for the Gemini SDK's underlying httpx client
@@ -52,6 +58,14 @@ MOCK_MODEL_NAME = "mock-llm-v1"
 # generic `except Exception` in GeminiLLMClient.complete() below is the real
 # safety net for any request that hangs past this or otherwise never returns.
 GEMINI_REQUEST_TIMEOUT_MS = 30_000
+
+# Seconds. Local inference on a 14B model can be slow on the first call after
+# the server has evicted the model from memory (observed ~50s reload cost
+# separate from generation time itself) -- generous on purpose, since a slow
+# local response is still strictly better than a false "provider unavailable"
+# on a healthy but cold server. The generic `except Exception` in
+# OllamaLLMClient.complete() below is the real safety net either way.
+OLLAMA_REQUEST_TIMEOUT_SECONDS = 90.0
 
 
 class LLMProviderError(Exception):
@@ -200,6 +214,83 @@ class GeminiLLMClient(LLMClient):
         return text
 
 
+class OllamaLLMClient(LLMClient):
+    """Thin wrapper over a locally-running Ollama server's HTTP `/api/chat`
+    endpoint -- no SDK, no API key, no external network call (everything
+    stays on OLLAMA_BASE_URL, which defaults to localhost). `httpx` is
+    already a direct dependency of this project (requirements.txt), so no
+    new package is added for this provider.
+
+    Uses `think: false` -- Qwen3 is a reasoning model that otherwise emits
+    its chain-of-thought in a separate `message.thinking` field (verified
+    directly against a running local server before writing this). Disabling
+    it is both faster (observed ~3-4x fewer output tokens for these short
+    structured-output prompts) and guarantees no reasoning text is ever
+    read, logged, or stored -- `complete()` below only ever looks at
+    `message.content`, never `message.thinking`, so there is nothing to
+    strip even if a future model ignored the flag.
+
+    Uses `format: "json"` (Ollama's structured-output constraint, brief
+    section 6: "force JSON output where Ollama/Qwen3 supports it") --
+    schema-level validation against each job's actual pydantic schema still
+    happens one layer up in llm/service.py::_invoke, exactly as for every
+    other provider.
+    """
+
+    provider_name = "ollama"
+
+    def __init__(self, base_url: str = DEFAULT_OLLAMA_BASE_URL, model: str = DEFAULT_OLLAMA_MODEL):
+        self.model_name = model
+        self._base_url = (base_url or DEFAULT_OLLAMA_BASE_URL).rstrip("/")
+
+    def complete(self, system_prompt: str, user_prompt: str, *, max_tokens: int = 512) -> str:
+        import httpx
+
+        try:
+            response = httpx.post(
+                f"{self._base_url}/api/chat",
+                json={
+                    "model": self.model_name,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "stream": False,
+                    "format": "json",
+                    "think": False,  # never let reasoning tokens reach message.content -- see class docstring
+                    "options": {
+                        "temperature": 0.1,  # near-deterministic, same rationale as GeminiLLMClient above
+                        "num_predict": max_tokens,
+                    },
+                },
+                timeout=OLLAMA_REQUEST_TIMEOUT_SECONDS,
+            )
+        except httpx.TimeoutException as exc:
+            raise LLMProviderError("ollama_timeout") from exc
+        except httpx.ConnectError as exc:
+            raise LLMProviderError("ollama_server_unavailable") from exc
+        except Exception as exc:  # noqa: BLE001 -- normalize every other network failure
+            raise LLMProviderError(f"ollama_request_error:{type(exc).__name__}") from exc
+
+        if response.status_code == 404:
+            # Ollama returns 404 for both "unknown route" and "model not
+            # found on this server" -- the latter is the realistic case
+            # here, since the route itself is fixed by this client.
+            raise LLMProviderError("ollama_model_not_found")
+        if response.status_code != 200:
+            raise LLMProviderError(f"ollama_http_error:{response.status_code}")
+
+        try:
+            data = response.json()
+        except Exception as exc:  # noqa: BLE001 -- malformed body from the server itself, not the model's JSON output
+            raise LLMProviderError(f"ollama_response_parse_error:{type(exc).__name__}") from exc
+
+        text = (data.get("message", {}).get("content") or "").strip()
+        if not text:
+            raise LLMProviderError("ollama_empty_response")
+        return text
+
+
 def get_llm_client() -> LLMClient:
     """Config-driven provider selection (brief section 6). Never logs or
     returns the API key itself."""
@@ -216,6 +307,13 @@ def get_llm_client() -> LLMClient:
             log.warning("LLM_PROVIDER=gemini but GEMINI_API_KEY is not set -- falling back to mock provider")
             return MockLLMClient()
         return GeminiLLMClient(api_key=settings.GEMINI_API_KEY, model=settings.GEMINI_MODEL)
+
+    if provider == "ollama":
+        # No API key needed -- reachability/model-availability failures are
+        # caught inside OllamaLLMClient.complete() and turned into the
+        # normal deterministic-fallback path by llm/service.py, exactly like
+        # any other provider failure. No network probe here at selection time.
+        return OllamaLLMClient(base_url=settings.OLLAMA_BASE_URL, model=settings.OLLAMA_MODEL)
 
     if provider != "mock":
         log.warning("Unknown LLM_PROVIDER=%r -- defaulting to mock provider", provider)

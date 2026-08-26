@@ -48,6 +48,14 @@ import pandas as pd
 from catboost import CatBoostClassifier
 
 from model.preprocessing import PROJECT_ROOT, prepare_for_catboost
+from model.unified_model import (
+    build_unified_feature_vector as build_unified_event_feature_vector,
+    generate_valid_candidates as generate_valid_unified_candidates,
+    load_unified_model as load_unified_recovery_model,
+    predict_unified_probability,
+    score_event_candidates as score_unified_event_candidates,
+    select_best_candidate as select_best_unified_candidate,
+)
 from policy.retry_candidates import Candidate
 
 ARTIFACTS_DIR = PROJECT_ROOT / "model" / "artifacts"
@@ -101,6 +109,26 @@ def heuristic_adjustment(candidate_type: str, candidate_days_to_payday: int) -> 
     )
     adjustment += PAYDAY_PROXIMITY_MAX_BOOST * proximity_fraction
     return adjustment
+
+
+def load_unified_revenue_model() -> dict:
+    return load_unified_recovery_model()
+
+
+def generate_unified_candidates(event_type: str) -> list[str]:
+    return generate_valid_unified_candidates(event_type)
+
+
+def build_unified_feature_frame(event: dict, candidate_type: str | None = None) -> pd.DataFrame:
+    return build_unified_event_feature_vector(event, candidate_type)
+
+
+def score_unified_event(event: dict, model: dict | None = None) -> list[dict]:
+    return score_unified_event_candidates(event, model)
+
+
+def select_unified_best_candidate(event: dict, model: dict | None = None) -> dict:
+    return select_best_unified_candidate(event, model)
 
 
 CANDIDATE_ARTIFACTS_DIR = PROJECT_ROOT / "model" / "candidate_artifacts"

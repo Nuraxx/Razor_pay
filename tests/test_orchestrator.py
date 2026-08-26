@@ -569,3 +569,63 @@ def test_policy_remains_deterministic_after_promise_parsing(test_db_session):
     assert r1.original_candidate_type == r2.original_candidate_type
     db1.close()
     db2.close()
+
+
+# ---------------------------------------------------------------------------
+# Full-system audit finding: RecoveryOutcome.__doc__ says this table is
+# "shared by every domain (payment_failed included)", but orchestrate_recovery
+# never wrote one -- payment_failed/subscription_payment_failed were invisible
+# in the Track-03 outcome/economics dashboard views. Fixed additively (no
+# existing field/behavior changed); these tests prove the fix and its honesty
+# guarantee (never a fabricated recovered amount) and its idempotency.
+# ---------------------------------------------------------------------------
+
+def test_legacy_payment_failed_now_writes_a_recovery_outcome_row(test_db_session):
+    from app.models import RecoveryOutcome
+
+    db = test_db_session()
+    orchestrate_recovery(db, _make_event(event_id=45, amount=750.0, error_reason="insufficient_fund"), model=_fake_model())
+    outcome = db.query(RecoveryOutcome).filter(RecoveryOutcome.event_id == 45, RecoveryOutcome.event_type == "payment_failed").first()
+    assert outcome is not None
+    assert outcome.at_risk_amount == 750.0
+    db.close()
+
+
+def test_legacy_recovery_outcome_is_never_fabricated_as_recovered(test_db_session):
+    from app.models import RecoveryOutcome
+
+    db = test_db_session()
+    orchestrate_recovery(db, _make_event(event_id=46, error_reason="insufficient_fund"), model=_fake_model())
+    outcome = db.query(RecoveryOutcome).filter(RecoveryOutcome.event_id == 46, RecoveryOutcome.event_type == "payment_failed").first()
+    assert outcome.recovery_status in ("PENDING", "NO_ACTION")  # never RECOVERED/PARTIALLY_RECOVERED/LOST for a live event
+    assert outcome.recovered_amount is None
+    assert outcome.confirmed_by == "unconfirmed_pending"
+    db.close()
+
+
+def test_legacy_recovery_outcome_reflects_no_action_for_unmapped_reason(test_db_session):
+    # unmapped -> NO_ACTION candidate AND communication skipped (nothing
+    # truthful to tell the customer for an unrecognized reason) -> the one
+    # bucket where final_status is genuinely "NO_ACTION", not just blocked.
+    from app.models import RecoveryOutcome
+
+    db = test_db_session()
+    result = orchestrate_recovery(db, _make_event(event_id=47, error_reason="totally_unrecognized_reason_xyz"), model=_fake_model())
+    assert result.final_status == "NO_ACTION"
+    outcome = db.query(RecoveryOutcome).filter(RecoveryOutcome.event_id == 47, RecoveryOutcome.event_type == "payment_failed").first()
+    assert outcome is not None
+    assert outcome.recovery_status == "NO_ACTION"
+    db.close()
+
+
+def test_legacy_recovery_outcome_is_idempotent_across_repeated_orchestration(test_db_session):
+    # orchestrate_recovery can be invoked more than once for the same event_id
+    # (e.g. a manual reprocess run) -- every other write in this function is
+    # already idempotent; the outcome row must not silently duplicate.
+    from app.models import RecoveryOutcome
+
+    db = test_db_session()
+    orchestrate_recovery(db, _make_event(event_id=48, error_reason="insufficient_fund"), model=_fake_model())
+    orchestrate_recovery(db, _make_event(event_id=48, error_reason="insufficient_fund"), model=_fake_model())
+    assert db.query(RecoveryOutcome).filter(RecoveryOutcome.event_id == 48, RecoveryOutcome.event_type == "payment_failed").count() == 1
+    db.close()

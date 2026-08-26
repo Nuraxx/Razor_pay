@@ -84,10 +84,10 @@ st.set_page_config(page_title="Adaptive Recovery", page_icon="💳", layout="wid
 
 LIVE_REFRESH_SECONDS = 5  # Part 10/11/31: smallest reasonable live-fragment boundary
 
-NAV_PAGES = ["Overview", "Recovery Queue", "Payment Events", "Analytics", "Communications", "Audit Log", "System / Demo"]
+NAV_PAGES = ["Overview", "Recovery Queue", "Payment Events", "Analytics", "Communications", "Audit Log", "System / Demo", "Revenue at Risk"]
 NAV_ICONS = {
     "Overview": "", "Recovery Queue": "", "Payment Events": "", "Analytics": "",
-    "Communications": "", "Audit Log": "", "System / Demo": "",
+    "Communications": "", "Audit Log": "", "System / Demo": "", "Revenue at Risk": "",
 }
 POLICY_LABELS = {
     "fixed_retry": "Fixed Retry", "rule_based": "Rule-Based", "day8_model_b_alone": "Day-8 Model B",
@@ -263,23 +263,157 @@ def render_baseline_definitions_section(report: dict) -> None:
 # Page: Overview
 # ---------------------------------------------------------------------------
 
+def _render_latest_recovery_pipeline(snapshot: dict | None) -> None:
+    """Compact, top-to-bottom rendering of the full live pipeline for the
+    single most recent orchestrated event: Razorpay -> payment.failed ->
+    classification -> ML/policy -> compliance -> LLM -> communication ->
+    final status. Every value comes straight from `snapshot` (built by
+    ui/data.py::get_live_pipeline_snapshot off real DB rows) -- no stage
+    here is ever invented when the underlying data is missing; field_row
+    already renders "—" for None."""
+    st.markdown("###### Latest recovery event")
+    if snapshot is None:
+        empty_state(
+            "No live event has reached classification/policy yet. Once a real Razorpay payment.failed "
+            "webhook with a subscription_id is orchestrated, its full pipeline appears here automatically."
+        )
+        return
+
+    if snapshot["is_live_razorpay_id"]:
+        id_label = mono(snapshot["razorpay_event_id"])
+    else:
+        id_label = f'{mono(snapshot["razorpay_event_id"])} <span class="ar-tag ar-tag-demo">SYNTHETIC / TEST ID</span>'
+    st.markdown(
+        f'<div class="ar-field-row"><span class="ar-field-label">Razorpay event ID</span>'
+        f'<span class="ar-field-value">{id_label}</span></div>',
+        unsafe_allow_html=True,
+    )
+
+    field_row("Received", data.format_ts(snapshot["received_at"]))
+    field_row("Stage: payment.failed", f'{snapshot["error_reason"] or "—"} ({money(snapshot["amount_rupees"])})')
+    field_row("Stage: classification", snapshot["classification_bucket"])
+    field_row("Stage: ML / policy decision", snapshot["selected_candidate_type"])
+    field_row("Decision source", snapshot["decision_source"])
+    field_row("Stage: compliance", snapshot["compliance_display"])
+
+    if snapshot["llm_provider"] is None:
+        field_row("Stage: LLM", "—")
+    else:
+        status = "SUCCESS" if snapshot["llm_success"] else "FAILED"
+        field_row("Stage: LLM", f'{snapshot["llm_provider"]} / {snapshot["llm_model"]} / {status}')
+        if not snapshot["llm_success"]:
+            field_row("Fallback", "deterministic (LLM failure never changes the recovery decision)")
+
+    field_row("Stage: communication", snapshot["communication_action"])
+    field_row("Final status", snapshot["final_status"])
+
+
+def _render_latest_communication(snapshot: dict | None) -> None:
+    """Compact "latest communication" summary -- same snapshot as the
+    pipeline above (zero extra queries), never the model's hidden reasoning
+    (llm_invocations.structured_output only ever contains the validated
+    schema fields -- see llm/client.py's OllamaLLMClient, which never reads
+    message.thinking in the first place)."""
+    st.markdown("###### Latest communication")
+    if snapshot is None or snapshot["llm_provider"] is None:
+        empty_state("No LLM communication has been generated yet for a live event.")
+        return
+
+    status = "Success" if snapshot["llm_success"] else "Failed (deterministic fallback used)"
+    message = snapshot["communication_message"] or "—"
+    if len(message) > 240:
+        message = message[:237] + "..."
+    field_row("Provider", str(snapshot["llm_provider"]).capitalize())
+    field_row("Model", snapshot["llm_model"])
+    field_row("Task", snapshot["llm_task"])
+    field_row("Status", status)
+    field_row("Message", message)
+
+
+def _render_latest_revenue_pipeline(snapshot: dict | None) -> None:
+    """Same idea as _render_latest_recovery_pipeline above, but for the most
+    recent event across the other 5 unified-ML domains (checkout_abandoned/
+    mandate_failed/receivable_overdue/promise_to_pay_broken/Payment-Link).
+    Distinguishes 3 ML states -- USED (ML's candidate is the final one),
+    CONSULTED_OVERRIDDEN (ML ran and produced a real score, but the
+    rule-based eligibility/human-review gate is what actually won), and
+    FALLBACK (ML never ran, e.g. artifact unavailable) -- see
+    ui/data.py::get_live_revenue_pipeline_snapshot. The middle state is
+    the one that used to be silently indistinguishable from "not
+    consulted"; it never is here."""
+    st.markdown("###### Latest revenue-risk event")
+    if snapshot is None:
+        empty_state(
+            "No live checkout/mandate/receivable/promise/Payment-Link event has been orchestrated yet."
+        )
+        return
+
+    field_row("Event type", snapshot["event_type"])
+    field_row("External ID", mono(snapshot["external_id"]) if snapshot["external_id"] else "—")
+    field_row("Received", data.format_ts(snapshot["received_at"]))
+    field_row("Stage: classification", snapshot["classification_bucket"])
+
+    prob = snapshot["predicted_recovery_probability"]
+    prob_str = f"{prob:.1%}" if prob is not None else "—"
+    ml_status = snapshot["ml_status"]
+    if ml_status == "USED":
+        field_row("Stage: unified ML model", f'{snapshot["model_version"]} · ML USED · P(recovery)={prob_str}')
+        field_row("ML-selected candidate", snapshot["selected_candidate_type"])
+        if snapshot["rule_baseline_candidate"]:
+            field_row("Rule baseline (for comparison)", snapshot["rule_baseline_candidate"])
+    elif ml_status == "CONSULTED_OVERRIDDEN":
+        field_row("Stage: unified ML model", f'{snapshot["model_version"]} · ML CONSULTED, overridden by policy · P(recovery)={prob_str}')
+        field_row("ML recommendation (not used)", snapshot["ml_recommendation"] or "—")
+        field_row("Policy-selected candidate", snapshot["selected_candidate_type"])
+    else:
+        field_row("Stage: unified ML model", "ML FALLBACK (artifact unavailable at decision time)")
+        field_row("Policy-selected candidate", snapshot["selected_candidate_type"])
+    field_row("Decision source", snapshot["decision_source"])
+    field_row("Stage: compliance", snapshot["compliance_display"] or "—")
+
+    if snapshot["llm_provider"] is None:
+        field_row("Stage: LLM", "—")
+    else:
+        status = "SUCCESS" if snapshot["llm_success"] else "FAILED"
+        field_row("Stage: LLM", f'{snapshot["llm_provider"]} / {snapshot["llm_model"]} / {snapshot["llm_task"]} / {status}')
+
+    field_row("Final status", snapshot["final_status"] or "—")
+
+
 @st.fragment(run_every=f"{LIVE_REFRESH_SECONDS}s")
 def _overview_live_fragment() -> None:
     source_tag("live")
     _render_live_pill("overview")
     kpis = _run_live("overview", data.get_live_kpis) or {}
+    llm_summary = _run_live("overview_llm", data.get_live_llm_summary) or {}
 
-    cols = st.columns(5, gap="small")
+    cols = st.columns(6, gap="small")
     with cols[0]:
         kpi_card("Failed payments", str(kpis.get("failed_payments", 0)), "raw_events, all-time")
     with cols[1]:
-        kpi_card("Policy decisions", str(kpis.get("policy_decisions", 0)), "Subscriptions-only scope")
+        kpi_card("Policy decisions", str(kpis.get("policy_decisions", 0)), "All domains")
     with cols[2]:
         kpi_card("Retry actions", str(kpis.get("retry_actions", 0)), "selected candidate ≠ NO_ACTION")
     with cols[3]:
         kpi_card("No action", str(kpis.get("no_action", 0)), "policy chose NO_ACTION")
     with cols[4]:
         kpi_card("Received, not orchestrated", str(kpis.get("received_not_orchestrated", 0)), "e.g. no subscription_id")
+    with cols[5]:
+        total_llm = llm_summary.get("total_invocations", 0)
+        if llm_summary.get("latest_provider") is None:
+            llm_sub = "No LLM calls yet"
+        else:
+            status = "SUCCESS" if llm_summary.get("latest_success") else "FAILED"
+            llm_sub = f'Latest: {llm_summary["latest_provider"]} / {llm_summary["latest_model"]} · {llm_summary["latest_task"]} · {status}'
+        kpi_card("LLM calls", str(total_llm), llm_sub)
+
+    st.markdown("<div style='height:0.3rem'></div>", unsafe_allow_html=True)
+    pipeline_snapshot = _run_live("overview_pipeline", data.get_live_pipeline_snapshot)
+    _render_latest_recovery_pipeline(pipeline_snapshot)
+
+    st.markdown("<div style='height:0.3rem'></div>", unsafe_allow_html=True)
+    revenue_pipeline_snapshot = _run_live("overview_revenue_pipeline", data.get_live_revenue_pipeline_snapshot)
+    _render_latest_revenue_pipeline(revenue_pipeline_snapshot)
 
     st.markdown("<div style='height:0.3rem'></div>", unsafe_allow_html=True)
     st.markdown("###### Recent payment events")
@@ -303,6 +437,9 @@ def _overview_live_fragment() -> None:
         "Recovery Queue shows the classification/policy/compliance outcome for events that had a "
         "subscription_id and could be orchestrated (Recovery Queue page)."
     )
+
+    st.markdown("<div style='height:0.3rem'></div>", unsafe_allow_html=True)
+    _render_latest_communication(pipeline_snapshot)
 
 
 def page_overview() -> None:
@@ -708,6 +845,139 @@ def page_communications() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Page: Revenue at Risk -- LIVE database (Track-03: checkout_abandoned /
+# mandate_failed / receivable_overdue / promise_to_pay_broken -- the SAME
+# live-refresh mechanism as every other page below, nothing new introduced.)
+# ---------------------------------------------------------------------------
+
+@st.fragment(run_every=f"{LIVE_REFRESH_SECONDS}s")
+def _revenue_at_risk_overview_fragment() -> None:
+    source_tag("live")
+    _render_live_pill("revenue_overview")
+    kpis = _run_live("revenue_overview", data.get_live_revenue_at_risk_kpis)
+    if kpis is None:
+        empty_state("Live revenue-risk KPIs unavailable.")
+        return
+    cols = st.columns(4, gap="small")
+    with cols[0]:
+        kpi_card("Revenue at risk", money(kpis["total_at_risk_amount"]), f"{kpis['total_revenue_risk_events']} cases")
+    with cols[1]:
+        kpi_card("Pending", str(kpis["pending_cases"]), "awaiting outcome")
+    with cols[2]:
+        kpi_card("No action", str(kpis["no_action_cases"]), "not eligible / capped")
+    with cols[3]:
+        kpi_card("Recovered", str(kpis["demo_synthetic_recovered_cases"]), "SYNTHETIC BENCHMARK only")
+
+
+@st.fragment(run_every=f"{LIVE_REFRESH_SECONDS}s")
+def _revenue_recovery_queue_fragment() -> None:
+    source_tag("live")
+    _render_live_pill("revenue_queue")
+    df = _run_live("revenue_queue", data.get_live_revenue_recovery_queue_df, limit=200)
+    if df is None or df.empty:
+        empty_state("No revenue-risk recovery cases yet.")
+        return
+    event_types = sorted(df["event_type"].unique().tolist())
+    selected = st.multiselect("Filter by event type", event_types, default=event_types, key="revenue_queue_filter")
+    filtered = df[df["event_type"].isin(selected)] if selected else df
+    table = pd.DataFrame({
+        "Event": filtered["event_id"], "Type": filtered["event_type"], "Customer": filtered["customer_ref"],
+        "Amount": filtered["amount"].map(money), "Candidate": filtered["selected_candidate_type"],
+        "Scheduled": filtered["selected_candidate_datetime"].map(data.format_ts),
+        "Decided": filtered["decided_at"].map(data.format_ts),
+    })
+    st.dataframe(table, width='stretch', height=340, hide_index=True)
+
+
+@st.fragment(run_every=f"{LIVE_REFRESH_SECONDS}s")
+def _revenue_timeline_fragment() -> None:
+    source_tag("live")
+    _render_live_pill("revenue_timeline")
+    df = _run_live("revenue_timeline", data.get_live_recovery_timeline_df, limit=100)
+    if df is None or df.empty:
+        empty_state("No recovery timeline events yet.")
+        return
+    table = pd.DataFrame({
+        "Time": df["timestamp"].map(data.format_ts), "Event Type": df["event_type"],
+        "Reference": df["reference"], "Amount": df["amount"].map(money),
+    })
+    st.dataframe(table, width='stretch', height=300, hide_index=True)
+
+
+@st.fragment(run_every=f"{LIVE_REFRESH_SECONDS}s")
+def _revenue_outcomes_fragment() -> None:
+    source_tag("live")
+    _render_live_pill("revenue_outcomes")
+    df = _run_live("revenue_outcomes", data.get_live_recovery_outcomes_df, limit=200)
+    if df is None or df.empty:
+        empty_state("No recovery outcomes recorded yet.")
+        return
+    table = pd.DataFrame({
+        "Event": df["event_id"], "Type": df["event_type"], "At risk": df["at_risk_amount"].map(money),
+        "Status": df["recovery_status"], "Recovered amount": df["recovered_amount"].map(money),
+        "Confirmed by": df["confirmed_by"], "Confirmed payment id": df["confirmed_payment_id"].fillna("—"),
+    })
+    st.dataframe(table, width='stretch', height=280, hide_index=True)
+
+
+@st.fragment(run_every=f"{LIVE_REFRESH_SECONDS}s")
+def _revenue_by_intervention_fragment() -> None:
+    source_tag("live")
+    _render_live_pill("revenue_by_intervention")
+    df = _run_live("revenue_by_intervention", data.get_live_revenue_by_intervention_df)
+    if df is None or df.empty:
+        empty_state("No intervention data yet.")
+        return
+    table = pd.DataFrame({
+        "Intervention": df["intervention"], "Cases": df["case_count"],
+        "Total at-risk amount": df["total_at_risk_amount"].map(money),
+    })
+    st.dataframe(table, width='stretch', height=260, hide_index=True)
+
+
+@st.fragment(run_every=f"{LIVE_REFRESH_SECONDS}s")
+def _customer_recovery_queue_fragment() -> None:
+    source_tag("live")
+    _render_live_pill("customer_queue")
+    df = _run_live("customer_queue", data.get_live_customer_recovery_queue_df, limit=200)
+    if df is None or df.empty:
+        empty_state("No customer recovery cases yet.")
+        return
+    table = pd.DataFrame({
+        "Customer": df["customer_ref"], "Latest event type": df["event_type"], "Amount": df["amount"].map(money),
+        "Status": df["status"], "Received": df["received_at"].map(data.format_ts),
+    })
+    st.dataframe(table, width='stretch', height=300, hide_index=True)
+
+
+def page_revenue_at_risk() -> None:
+    section_header("Revenue at Risk", "Track-03: checkout drop-off, subscriptions, mandates, receivables, and promise-to-pay — one recovery engine.")
+
+    st.markdown("##### Revenue-at-Risk Overview")
+    _revenue_at_risk_overview_fragment()
+
+    st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
+    st.markdown("##### Recovery Queue")
+    _revenue_recovery_queue_fragment()
+
+    st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
+    st.markdown("##### Recovery Timeline")
+    _revenue_timeline_fragment()
+
+    st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
+    st.markdown("##### Recovery Outcomes")
+    _revenue_outcomes_fragment()
+
+    st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
+    st.markdown("##### Revenue At Risk by Intervention")
+    _revenue_by_intervention_fragment()
+
+    st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
+    st.markdown("##### Customer Recovery Queue")
+    _customer_recovery_queue_fragment()
+
+
+# ---------------------------------------------------------------------------
 # Page: Audit Log -- LIVE database
 # ---------------------------------------------------------------------------
 
@@ -885,6 +1155,30 @@ def page_system_demo() -> None:
             for row in audit_rows:
                 st.markdown(f"`{row.actor}` — {row.action}")
 
+    st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
+    st.markdown("##### Interactive demo — Generate one Track-03 event of each new kind")
+    source_tag("demo")
+    st.caption(
+        "Uses recovery/revenue_orchestrator.py directly (plus the existing orchestrator for the payment/subscription "
+        "kinds), over a throwaway in-memory database — never the real Razorpay-webhook-backed DB. No live actions are ever attempted."
+    )
+    if st.button("Generate demo revenue-risk events"):
+        model = data._try_load_model()
+        with st.spinner("Running the recovery engine over 7 synthetic events..."):
+            results = data.run_revenue_demo_generator(model=model)
+
+        for kind, result in results.items():
+            with st.expander(kind.replace("_", " ").title()):
+                if result is None:
+                    st.write("— (no result)")
+                elif hasattr(result, "final_status"):
+                    st.write(f"final_status: `{result.final_status}`")
+                    st.write(f"selected_candidate_type: `{result.selected_candidate_type}`")
+                elif hasattr(result, "status"):
+                    st.write(f"status: `{result.status}`")
+                elif hasattr(result, "lifecycle_status"):
+                    st.write(f"lifecycle_status: `{result.lifecycle_status}`")
+
 
 # ---------------------------------------------------------------------------
 # Main
@@ -915,6 +1209,7 @@ def main() -> None:
         "Communications": page_communications,
         "Audit Log": page_audit_log,
         "System / Demo": page_system_demo,
+        "Revenue at Risk": page_revenue_at_risk,
     }
     pages[page]()
 

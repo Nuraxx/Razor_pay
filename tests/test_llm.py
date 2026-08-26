@@ -27,6 +27,7 @@ from llm.client import (
     LLMClient,
     LLMProviderError,
     MockLLMClient,
+    OllamaLLMClient,
     get_llm_client,
 )
 from llm.prompts import mock_response_for_prompt
@@ -543,6 +544,277 @@ class TestGeminiClient:
 
         decision_after = _make_decision()
         assert decision_before == decision_after  # identical decision, Gemini outage had no effect whatsoever
+
+
+# ---------------------------------------------------------------------------
+# Ollama provider (local Qwen3 14B) -- never makes a real network call in
+# this suite; httpx.post is monkeypatched with a fake response throughout,
+# same technique _patch_gemini_client above uses for google.genai.Client.
+# ---------------------------------------------------------------------------
+
+class _FakeHttpxResponse:
+    def __init__(self, status_code=200, json_body=None, json_raises=False):
+        self.status_code = status_code
+        self._json_body = json_body
+        self._json_raises = json_raises
+
+    def json(self):
+        if self._json_raises:
+            raise ValueError("not valid json body")
+        return self._json_body
+
+
+def _patch_ollama_post(monkeypatch, *, response=None, exc=None):
+    import httpx
+
+    calls = []
+
+    def _fake_post(url, *, json, timeout):
+        calls.append({"url": url, "json": json, "timeout": timeout})
+        if exc is not None:
+            raise exc
+        return response
+
+    monkeypatch.setattr(httpx, "post", _fake_post)
+    return calls
+
+
+class TestOllamaProviderSelection:
+    def test_get_llm_client_ollama_returns_ollama_client_no_api_key_required(self, monkeypatch):
+        monkeypatch.setattr("app.config.settings.LLM_PROVIDER", "ollama")
+        monkeypatch.setattr("app.config.settings.OLLAMA_BASE_URL", "http://localhost:11434")
+        monkeypatch.setattr("app.config.settings.OLLAMA_MODEL", "qwen3:14b")
+        client = get_llm_client()
+        assert isinstance(client, OllamaLLMClient)
+        assert client.provider_name == "ollama"
+        assert client.model_name == "qwen3:14b"
+
+    def test_gemini_and_anthropic_selection_unaffected_by_ollama_addition(self, monkeypatch):
+        monkeypatch.setattr("app.config.settings.LLM_PROVIDER", "anthropic")
+        monkeypatch.setattr("app.config.settings.ANTHROPIC_API_KEY", "")
+        assert isinstance(get_llm_client(), MockLLMClient)
+
+        monkeypatch.setattr("app.config.settings.LLM_PROVIDER", "gemini")
+        monkeypatch.setattr("app.config.settings.GEMINI_API_KEY", "")
+        assert isinstance(get_llm_client(), MockLLMClient)
+
+    def test_mock_provider_still_the_default(self, monkeypatch):
+        monkeypatch.setattr("app.config.settings.LLM_PROVIDER", "mock")
+        assert isinstance(get_llm_client(), MockLLMClient)
+
+
+class TestOllamaClient:
+    def test_initialization_sets_model_base_url_and_provider_name_no_network_call(self, monkeypatch):
+        import httpx
+
+        def _blow_up(*args, **kwargs):
+            raise AssertionError("OllamaLLMClient.__init__ must never make a network call")
+
+        monkeypatch.setattr(httpx, "post", _blow_up)
+        client = OllamaLLMClient(base_url="http://localhost:11434", model="qwen3:14b")
+        assert client.provider_name == "ollama"
+        assert client.model_name == "qwen3:14b"
+        assert client._base_url == "http://localhost:11434"
+
+    def test_base_url_trailing_slash_is_stripped(self):
+        client = OllamaLLMClient(base_url="http://localhost:11434/", model="qwen3:14b")
+        assert client._base_url == "http://localhost:11434"
+
+    def test_successful_response_uses_correct_url_model_and_flags(self, monkeypatch):
+        good = json.dumps({"message_text": "hi", "language": "en", "failure_bucket": "x", "customer_segment": "y"})
+        calls = _patch_ollama_post(monkeypatch, response=_FakeHttpxResponse(200, {"message": {"content": good}}))
+        client = OllamaLLMClient(base_url="http://localhost:11434", model="qwen3:14b")
+        out = client.complete("system prompt", "user prompt", max_tokens=256)
+
+        assert json.loads(out)["message_text"] == "hi"
+        assert len(calls) == 1
+        call = calls[0]
+        assert call["url"] == "http://localhost:11434/api/chat"
+        assert call["json"]["model"] == "qwen3:14b"
+        assert call["json"]["format"] == "json"
+        assert call["json"]["think"] is False
+        assert call["json"]["stream"] is False
+        assert call["json"]["options"]["num_predict"] == 256
+        assert call["json"]["messages"] == [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "user prompt"},
+        ]
+
+    def test_structured_json_response_parsed_from_message_content(self, monkeypatch):
+        payload = {"date": "2026-08-28", "confidence": 0.85, "channel": "upi_autopay"}
+        _patch_ollama_post(monkeypatch, response=_FakeHttpxResponse(200, {"message": {"content": json.dumps(payload)}}))
+        client = OllamaLLMClient()
+        out = client.complete("sys", "user")
+        assert json.loads(out) == payload
+
+    def test_thinking_field_is_never_read_or_returned(self, monkeypatch):
+        """Even if a server ignored `think: false` and still emitted a
+        separate `message.thinking` field, complete() must never read it --
+        only message.content is ever inspected (brief section 6)."""
+        good = json.dumps({"message_text": "hi", "language": "en", "failure_bucket": "x", "customer_segment": "y"})
+        _patch_ollama_post(
+            monkeypatch,
+            response=_FakeHttpxResponse(200, {"message": {"content": good, "thinking": "secret reasoning chain, must never leak"}}),
+        )
+        client = OllamaLLMClient()
+        out = client.complete("sys", "user")
+        assert "secret reasoning chain" not in out
+
+    def test_malformed_json_content_falls_back_through_service_layer(self, monkeypatch):
+        _patch_ollama_post(monkeypatch, response=_FakeHttpxResponse(200, {"message": {"content": "not valid json {{{"}}))
+        client = OllamaLLMClient()
+        result = generate_outreach_microcopy(
+            failure_bucket="retryable_soft", customer_segment="mid", language="en", will_retry=True,
+            retry_window_description="soon", amount_rupees=100.0, client=client,
+        )
+        assert result.success is False
+        assert result.provider == "ollama"
+        assert result.error_type == "invalid_json"
+        OutreachMicrocopyOutput.model_validate(result.structured_result)  # fallback is still schema-valid
+
+    def test_schema_invalid_output_falls_back_through_service_layer(self, monkeypatch):
+        bad = json.dumps({"message_text": "hi", "language": "klingon", "failure_bucket": "x", "customer_segment": "y"})
+        _patch_ollama_post(monkeypatch, response=_FakeHttpxResponse(200, {"message": {"content": bad}}))
+        client = OllamaLLMClient()
+        result = generate_outreach_microcopy(
+            failure_bucket="retryable_soft", customer_segment="mid", language="en", will_retry=True,
+            retry_window_description="soon", amount_rupees=100.0, client=client,
+        )
+        assert result.success is False
+        assert result.error_type == "schema_validation_error"
+
+    def test_server_unavailable_raises_provider_error(self, monkeypatch):
+        import httpx
+
+        _patch_ollama_post(monkeypatch, exc=httpx.ConnectError("connection refused"))
+        client = OllamaLLMClient()
+        with pytest.raises(LLMProviderError, match="ollama_server_unavailable"):
+            client.complete("sys", "user")
+
+    def test_timeout_raises_provider_error(self, monkeypatch):
+        import httpx
+
+        _patch_ollama_post(monkeypatch, exc=httpx.TimeoutException("timed out"))
+        client = OllamaLLMClient()
+        with pytest.raises(LLMProviderError, match="ollama_timeout"):
+            client.complete("sys", "user")
+
+    def test_model_missing_404_raises_provider_error(self, monkeypatch):
+        _patch_ollama_post(monkeypatch, response=_FakeHttpxResponse(404, {"error": "model not found"}))
+        client = OllamaLLMClient()
+        with pytest.raises(LLMProviderError, match="ollama_model_not_found"):
+            client.complete("sys", "user")
+
+    def test_http_error_raises_provider_error(self, monkeypatch):
+        _patch_ollama_post(monkeypatch, response=_FakeHttpxResponse(500, {"error": "internal"}))
+        client = OllamaLLMClient()
+        with pytest.raises(LLMProviderError, match="ollama_http_error:500"):
+            client.complete("sys", "user")
+
+    def test_empty_content_raises_provider_error(self, monkeypatch):
+        _patch_ollama_post(monkeypatch, response=_FakeHttpxResponse(200, {"message": {"content": ""}}))
+        client = OllamaLLMClient()
+        with pytest.raises(LLMProviderError, match="ollama_empty_response"):
+            client.complete("sys", "user")
+
+    def test_malformed_response_body_raises_provider_error(self, monkeypatch):
+        _patch_ollama_post(monkeypatch, response=_FakeHttpxResponse(200, json_raises=True))
+        client = OllamaLLMClient()
+        with pytest.raises(LLMProviderError, match="ollama_response_parse_error"):
+            client.complete("sys", "user")
+
+    def test_unexpected_exception_normalized_to_provider_error(self, monkeypatch):
+        _patch_ollama_post(monkeypatch, exc=RuntimeError("boom"))
+        client = OllamaLLMClient()
+        with pytest.raises(LLMProviderError, match="ollama_request_error"):
+            client.complete("sys", "user")
+
+    def test_never_crashes_regardless_of_failure_mode(self, monkeypatch):
+        """brief section 3: 'never crash the recovery orchestrator' --
+        every Ollama failure mode must be caught and turned into the same
+        deterministic fallback the service layer already guarantees for
+        every other provider, never an unhandled exception bubbling up."""
+        import httpx
+
+        failure_clients = []
+        for exc in (httpx.ConnectError("x"), httpx.TimeoutException("x"), RuntimeError("x")):
+            _patch_ollama_post(monkeypatch, exc=exc)
+            failure_clients.append(OllamaLLMClient())
+
+        for client in failure_clients:
+            result = generate_outreach_microcopy(
+                failure_bucket="retryable_soft", customer_segment="mid", language="en", will_retry=True,
+                retry_window_description="soon", amount_rupees=100.0, client=client,
+            )
+            assert result.success is False
+            assert result.provider == "ollama"
+            OutreachMicrocopyOutput.model_validate(result.structured_result)
+
+    def test_audit_record_created_with_ollama_provider(self, monkeypatch, test_db_session):
+        good = json.dumps({"message_text": "hi", "language": "en", "failure_bucket": "x", "customer_segment": "y"})
+        _patch_ollama_post(monkeypatch, response=_FakeHttpxResponse(200, {"message": {"content": good}}))
+        client = OllamaLLMClient()
+        db = test_db_session()
+        result, invocation = generate_outreach_microcopy_and_log(
+            db, event_id=4001, failure_bucket="retryable_soft", customer_segment="mid", language="en",
+            will_retry=True, retry_window_description="soon", amount_rupees=100.0, client=client,
+        )
+        assert result.success is True
+        assert invocation.provider == "ollama"
+        assert invocation.model_name == "qwen3:14b"
+        audit_rows = db.query(AuditLog).filter(AuditLog.actor == "llm", AuditLog.failure_event_id == 4001).all()
+        assert len(audit_rows) == 1
+        assert "provider=ollama" in audit_rows[0].reason
+        db.close()
+
+    def test_audit_never_stores_thinking_or_secrets(self, monkeypatch, test_db_session):
+        good = json.dumps({"message_text": "hi", "language": "en", "failure_bucket": "x", "customer_segment": "y"})
+        _patch_ollama_post(
+            monkeypatch,
+            response=_FakeHttpxResponse(200, {"message": {"content": good, "thinking": "hidden reasoning chain XYZ"}}),
+        )
+        client = OllamaLLMClient()
+        db = test_db_session()
+        result, invocation = generate_outreach_microcopy_and_log(
+            db, event_id=4002, failure_bucket="retryable_soft", customer_segment="mid", language="en",
+            will_retry=True, retry_window_description="soon", amount_rupees=100.0, client=client,
+        )
+        assert "hidden reasoning chain XYZ" not in (invocation.structured_output or "")
+        audit_rows = db.query(AuditLog).filter(AuditLog.actor == "llm", AuditLog.failure_event_id == 4002).all()
+        assert "hidden reasoning chain XYZ" not in audit_rows[0].reason
+        db.close()
+
+    def test_payment_decision_identical_regardless_of_ollama_outcome(self, monkeypatch):
+        import httpx
+
+        _patch_ollama_post(monkeypatch, exc=httpx.ConnectError("server unreachable"))
+        broken_ollama_client = OllamaLLMClient()
+
+        def _make_decision():
+            bucket = classify(None, "insufficient_fund").bucket
+
+            class _PassthroughImputer:
+                def transform(self, X):
+                    return X
+
+            class _FakeCatBoost:
+                def predict(self, X):
+                    import numpy as np
+
+                    return np.array([100.0, 90.0, 80.0, 70.0, 60.0][: len(X)])
+
+            model = {"imputer": _PassthroughImputer(), "catboost_model": _FakeCatBoost()}
+            return decide_engine_v4(7001, "sub_ollama_independence", FAILURE_TS, 1000.0, bucket, FAILURE_CONTEXT, model=model)
+
+        decision_before = _make_decision()
+
+        # Run all 3 LLM jobs against an Ollama client whose server is always unreachable -- must have ZERO effect on the policy layer.
+        generate_outreach_microcopy(failure_bucket=decision_before.classification_bucket, customer_segment="mid", language="en", will_retry=True, retry_window_description="soon", amount_rupees=1000.0, client=broken_ollama_client)
+        parse_promise_to_pay(customer_reply_text="I'll pay Friday", today=date(2026, 8, 24), client=broken_ollama_client)
+        generate_batch_explanation(report_summary={"label": "SYNTHETIC COUNTERFACTUAL EVALUATION"}, client=broken_ollama_client)
+
+        decision_after = _make_decision()
+        assert decision_before == decision_after  # identical decision, Ollama outage had no effect whatsoever
 
 
 # ---------------------------------------------------------------------------

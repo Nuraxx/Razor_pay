@@ -260,3 +260,217 @@ class PromiseToPay(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class RevenueRiskEvent(Base):
+    """
+    Track-03 extension: the normalized cross-domain "revenue-at-risk" event.
+    Used ONLY for the event types that don't already have a home --
+    checkout_abandoned, mandate_failed, receivable_overdue, and
+    promise_to_pay_broken (the feedback-loop event recovery/promise_lifecycle.py
+    creates when a promise passes its date unfulfilled). payment_failed and
+    subscription_payment_failed deliberately keep using raw_events/failure_events
+    exactly as before -- this table is additive, not a replacement.
+
+    Every other new table below (checkout_sessions, mandate_retry_sequences,
+    receivables) points back here via `revenue_risk_event_id`, and
+    policy_decisions/llm_invocations/audit_log/recovery_outcomes reuse their
+    existing untyped "logical FK" event_id/failure_event_id columns to carry
+    this table's id for these event types -- the same convention every other
+    cross-table reference in this file already uses (no SQLAlchemy
+    ForeignKey() is declared anywhere in this module).
+    """
+    __tablename__ = "revenue_risk_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    # Idempotency key, caller-computed as f"{event_type}:{external_id}" unless
+    # the caller supplies its own token -- mirrors raw_events.razorpay_event_id.
+    idempotency_key: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+
+    # "checkout_abandoned" | "mandate_failed" | "receivable_overdue" | "promise_to_pay_broken"
+    event_type: Mapped[str] = mapped_column(String(32), index=True)
+
+    external_id: Mapped[str] = mapped_column(String(64), index=True)  # cart_id / mandate_id / invoice_id
+    customer_ref: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)  # subscription_id / customer_id / account_id, generalized
+
+    amount: Mapped[float | None] = mapped_column(Float, nullable=True)  # RUPEES -- these are new API inputs, not Razorpay paise
+    currency: Mapped[str] = mapped_column(String(8), default="INR")
+
+    occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)  # domain-event time
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    reason: Mapped[str | None] = mapped_column(String(64), nullable=True)  # domain reason code
+    context_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # structured domain payload, JSON text
+
+    recovery_eligible: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # set by the domain rule module
+    eligibility_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # generalized cross-domain lifecycle
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    # "OPEN" | "RECOVERY_ELIGIBLE" | "IN_PROGRESS" | "RECOVERED" | "EXPIRED" | "NO_ACTION"
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class CheckoutSession(Base):
+    """Track-03: checkout drop-off recovery. 1:1 detail row for a
+    RevenueRiskEvent(event_type="checkout_abandoned")."""
+    __tablename__ = "checkout_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    revenue_risk_event_id: Mapped[int] = mapped_column(Integer, index=True, unique=True)  # FK to revenue_risk_events.id (logical)
+
+    cart_id: Mapped[str] = mapped_column(String(64), index=True)
+    customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    cart_amount: Mapped[float] = mapped_column(Float)
+    payment_method: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    checkout_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    # "CHECKOUT_STARTED" | "CHECKOUT_STALLED" | "ABANDONED" | "RECOVERY_ELIGIBLE" | "RECOVERED" | "EXPIRED"
+    state: Mapped[str] = mapped_column(String(32), index=True)
+    inactivity_minutes: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    consent_for_communication: Mapped[bool] = mapped_column(Boolean, default=True)
+    previous_outreach_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class MandateRetrySequence(Base):
+    """Track-03: bounded, auditable mandate retry planner. 1:1 detail row for
+    a RevenueRiskEvent(event_type="mandate_failed"). Deliberately has no child
+    "step" table -- every step transition is one audit_log row
+    (actor="mandate_sequencer"), the same way this codebase already narrates
+    history through the audit trail rather than a bespoke history table
+    (see PromiseToPay's docstring for the same reasoning)."""
+    __tablename__ = "mandate_retry_sequences"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    revenue_risk_event_id: Mapped[int] = mapped_column(Integer, index=True, unique=True)  # FK to revenue_risk_events.id (logical)
+
+    mandate_id: Mapped[str] = mapped_column(String(64), index=True)
+    subscription_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+
+    # "PLANNED" | "IN_PROGRESS" | "ESCALATED" | "COMPLETED" | "ABORTED"
+    sequence_status: Mapped[str] = mapped_column(String(32), index=True)
+    # "attempt_1" | "wait" | "attempt_2" | "alternate_window" | "communication" | "final_attempt" | "escalation" | "no_action"
+    current_step: Mapped[str] = mapped_column(String(32))
+
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+
+    next_action_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    next_action_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    retry_reason: Mapped[str] = mapped_column(Text)
+    terminal_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class Receivable(Base):
+    """Track-03: B2B overdue-receivable chaser. 1:1 detail row for a
+    RevenueRiskEvent(event_type="receivable_overdue")."""
+    __tablename__ = "receivables"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    revenue_risk_event_id: Mapped[int] = mapped_column(Integer, index=True, unique=True)  # FK to revenue_risk_events.id (logical)
+
+    invoice_id: Mapped[str] = mapped_column(String(64), index=True)
+    customer_account_id: Mapped[str] = mapped_column(String(64), index=True)
+    invoice_amount: Mapped[float] = mapped_column(Float)
+    due_date: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    days_overdue: Mapped[int] = mapped_column(Integer)
+    customer_segment: Mapped[str] = mapped_column(String(32), default="unknown")
+
+    previous_promises_count: Mapped[int] = mapped_column(Integer, default=0)
+    previous_contacts_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    # "due_soon" | "overdue_soft" | "overdue_medium" | "overdue_high" | "disputed" | "promise_to_pay"
+    escalation_bucket: Mapped[str] = mapped_column(String(32), index=True)
+    escalation_level: Mapped[int] = mapped_column(Integer, default=0)  # decided ONLY here -- see policy/receivables_rules.py
+
+    status: Mapped[str] = mapped_column(String(32), index=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class PromiseOutcome(Base):
+    """
+    Track-03: the lifecycle dimension layered ON TOP of PromiseToPay.status.
+    PromiseToPay.status above stays validation-time-only (VALID/LOW_CONFIDENCE/
+    INVALID_DATE/EXPIRED/SUPERSEDED, policy/promise_to_pay.py, UNCHANGED) --
+    "was the parse trustworthy". This is a SEPARATE dimension -- "did the
+    customer actually keep it" -- created lazily by recovery/promise_lifecycle.py
+    the first time a lifecycle fact becomes knowable (the promised_date passes,
+    or an explicit confirmation is recorded). Kept as its own table rather than
+    a new column on promises_to_pay because this project has no migration tool
+    (Base.metadata.create_all() only creates missing tables, it cannot ALTER an
+    existing one) -- so promises_to_pay stays byte-for-byte unchanged.
+    """
+    __tablename__ = "promise_outcomes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    promise_to_pay_id: Mapped[int] = mapped_column(Integer, index=True, unique=True)  # FK to promises_to_pay.id (logical)
+
+    # "PROMISED" | "FULFILLED" | "BROKEN" | "EXPIRED" | "CANCELLED"
+    lifecycle_status: Mapped[str] = mapped_column(String(32), index=True)
+    status_reason: Mapped[str] = mapped_column(Text)
+    resolved_by: Mapped[str] = mapped_column(String(32))  # "system_auto_expire" | "manual" | "webhook_confirmed"
+
+    triggered_reevaluation: Mapped[bool] = mapped_column(Boolean, default=False)
+    reevaluation_event_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # FK to revenue_risk_events.id (logical) -- the promise_to_pay_broken event this created, if any
+
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class RecoveryOutcome(Base):
+    """
+    Track-03: the generalized revenue-outcome model, shared by every domain
+    (payment_failed included). event_id/event_type together disambiguate
+    which table event_id points into (failure_events.id for payment_failed/
+    subscription_payment_failed, revenue_risk_events.id otherwise) -- same
+    untyped "logical FK" convention as policy_decisions.event_id.
+
+    BINDING RULE: this backend never actually calls Razorpay to confirm a
+    retry succeeded (recovery/orchestrator.py only ever records
+    payment_action="retry_scheduled", never a live payment confirmation) --
+    so every LIVE row must be written with recovery_status="PENDING",
+    recovered_amount=None, confirmed_by="unconfirmed_pending". Only
+    recovery/demo_generator.py (confirmed_by="demo_synthetic") or the
+    synthetic evaluation pipeline may ever write RECOVERED/LOST with a
+    non-null recovered_amount.
+    """
+    __tablename__ = "recovery_outcomes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_id: Mapped[int] = mapped_column(Integer, index=True)  # FK to failure_events.id OR revenue_risk_events.id (logical), disambiguated by event_type
+    event_type: Mapped[str] = mapped_column(String(32), index=True)
+
+    at_risk_amount: Mapped[float] = mapped_column(Float)
+    recovered_amount: Mapped[float | None] = mapped_column(Float, nullable=True)  # None = unknown/pending, NEVER fabricated for live data
+    retained_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lost_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # "RECOVERED" | "PARTIALLY_RECOVERED" | "PENDING" | "LOST" | "NO_ACTION"
+    recovery_status: Mapped[str] = mapped_column(String(32), index=True)
+    confirmed_by: Mapped[str] = mapped_column(String(32))  # "webhook_confirmed" | "manual" | "unconfirmed_pending" | "demo_synthetic"
+
+    # Closed-loop confirmation (recovery/payment_reconciliation.py): the
+    # authoritative Razorpay payment_id from the payment.captured webhook
+    # that confirmed this outcome. None until confirmed_by=="webhook_confirmed"
+    # actually happens; never set from anything else (never guessed/fuzzy-matched).
+    confirmed_payment_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)

@@ -28,12 +28,28 @@ class Settings:
     # Day 11 -- LLM-assisted communication layer (llm/). "mock" (default) makes
     # zero network calls and needs no API key; the project runs fully offline
     # with this unset. "anthropic" requires ANTHROPIC_API_KEY; "gemini"
-    # requires GEMINI_API_KEY.
+    # requires GEMINI_API_KEY. "ollama" requires no API key -- it talks to a
+    # locally-running Ollama server instead (OLLAMA_BASE_URL/OLLAMA_MODEL below).
     LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "mock")
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
     ANTHROPIC_MODEL: str = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5")
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+
+    # Local Ollama provider -- no API key, no external network call. Requires
+    # an Ollama server already running locally with OLLAMA_MODEL pulled.
+    OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "qwen3:14b")
+
+    # Track-03 hardening: automatic broken-promise detection (recovery/scheduler.py).
+    # A lightweight in-process asyncio loop, not an external scheduler -- see
+    # that module's docstring. Disabled by setting this to "false"; the test
+    # suite never starts it regardless (FastAPI's lifespan never runs for a
+    # bare TestClient(app) used without an explicit `with` block, which is
+    # how tests/conftest.py's `client` fixture constructs it), but this flag
+    # is kept explicit rather than relying on that fixture-level fact alone.
+    ENABLE_PROMISE_SWEEP_SCHEDULER: bool = os.getenv("ENABLE_PROMISE_SWEEP_SCHEDULER", "true").lower() == "true"
+    PROMISE_SWEEP_INTERVAL_SECONDS: int = int(os.getenv("PROMISE_SWEEP_INTERVAL_SECONDS", "300"))
 
     def validate_webhook_secret_present(self) -> None:
         if not self.RAZORPAY_WEBHOOK_SECRET:

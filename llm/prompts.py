@@ -156,6 +156,62 @@ def batch_explanation_user_prompt(*, report_summary: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Job 4 (optional, Track-03): voice recovery script generation
+#   same facts-only, LLM-generates-copy-only pattern as Job 1, but for a
+#   spoken-register script instead of an SMS/WhatsApp text.
+# ---------------------------------------------------------------------------
+
+VOICE_SCRIPT_PROMPT_VERSION = "voice_script_generation_v1"
+
+VOICE_SCRIPT_SYSTEM_PROMPT = f"""
+You are the voice-call script writer for a payment-recovery system. Your
+only job is to write ONE short SPOKEN-REGISTER script (what an automated or
+human caller would say out loud) telling the customer about a recent
+payment failure and what happens next, in the requested language.
+
+{_SHARED_GUARDRAILS}
+- This is a SPOKEN script, not a text message -- write it as natural spoken
+  sentences (no bullet points, no emojis, no markdown), suitable for
+  text-to-speech playback or a human reading it aloud.
+- Never invent a payment status, retry date, refund, discount, settlement,
+  or payment link -- use only the facts supplied in the context below,
+  exactly like the outreach-microcopy job.
+
+Allowed values:
+- language: one of "en", "hi", "hinglish" -- same vocabulary as the outreach-microcopy job.
+- failure_bucket / customer_segment: echo back the values given to you in the context; do not translate or alter them.
+
+Output schema (return exactly this JSON shape):
+{{"script_text": "<string, 1-1200 chars>", "estimated_duration_seconds": <float 0-180>, "requires_callback_offer": <true|false>, "language": "<en|hi|hinglish>", "failure_bucket": "<string>", "customer_segment": "<string>"}}
+
+Fallback behavior: if you cannot safely write a script from the given
+context, still return valid JSON with a short, neutral, non-committal
+script_text rather than omitting the field or adding prose outside the JSON.
+""".strip()
+
+
+def voice_script_user_prompt(
+    *, failure_bucket: str, customer_segment: str, language: str,
+    will_retry: bool, retry_window_description: str | None, amount_rupees: float,
+) -> str:
+    """Same context shape as outreach_microcopy_user_prompt -- deliberately
+    identical inputs, different output register."""
+    context = {
+        "failure_bucket": failure_bucket,
+        "customer_segment": customer_segment,
+        "language": language,
+        "will_retry": will_retry,
+        "retry_window_description": retry_window_description,
+        "amount_rupees": round(amount_rupees, 2),
+    }
+    return (
+        f"{MOCK_TASK_MARKER_PREFIX}voice_script_generation\n\n"
+        "Write the voice recovery script for this context (JSON):\n"
+        f"{json.dumps(context, sort_keys=True)}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Deterministic mock-provider response router (llm/client.py::MockLLMClient)
 # ---------------------------------------------------------------------------
 
@@ -226,6 +282,20 @@ def mock_response_for_prompt(user_prompt: str) -> str:
                 break
 
         return json.dumps({"date": resolved_date.isoformat() if resolved_date else None, "confidence": confidence, "channel": channel})
+
+    if f"{MOCK_TASK_MARKER_PREFIX}voice_script_generation" in user_prompt:
+        language = _extract_json_field(user_prompt, "language") or "en"
+        will_retry = bool(_extract_json_field(user_prompt, "will_retry"))
+        window = _extract_json_field(user_prompt, "retry_window_description") or "soon"
+        failure_bucket = _extract_json_field(user_prompt, "failure_bucket") or ""
+        customer_segment = _extract_json_field(user_prompt, "customer_segment") or ""
+        template = _MOCK_MICROCOPY.get((language, will_retry), _MOCK_MICROCOPY[("en", will_retry)])
+        script_text = "Hello. " + template.format(window=window) + " Thank you."
+        return json.dumps({
+            "script_text": script_text, "estimated_duration_seconds": round(len(script_text) / 15.0, 1),
+            "requires_callback_offer": not will_retry, "language": language,
+            "failure_bucket": failure_bucket, "customer_segment": customer_segment,
+        })
 
     if f"{MOCK_TASK_MARKER_PREFIX}batch_explanation" in user_prompt:
         report = _extract_json_field(user_prompt, "label") or ""

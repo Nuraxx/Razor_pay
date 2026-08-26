@@ -59,7 +59,7 @@ REPORTS_DIR = PROJECT_ROOT / "evaluation" / "reports"
 MARGIN_THRESHOLD_CANDIDATES = [0, 5, 10, 15, 20, 25, 50, 75, 100]
 FALLBACK_ADVANTAGE_CANDIDATES = [0, 5, 10, 15, 20, 25, 50, 75, 100]  # reused from the same set -- see module docstring
 
-POLICY_NAMES = ["fixed_retry", "rule_based", "day8_model_b_alone", "day9_original_fallback", "day10_improved_fallback", "oracle_policy"]
+POLICY_NAMES = ["no_recovery", "fixed_retry", "rule_based", "day8_model_b_alone", "day9_original_fallback", "day10_improved_fallback", "oracle_policy"]
 
 # The single headline comparison the specification and dashboard care about
 # most (brief: "the agent vs. Razorpay's own baseline" / "clearing all three
@@ -216,6 +216,14 @@ def evaluate_events_v4(test_df: pd.DataFrame, model: dict, day10_config: dict) -
         oracle_sel = max((ct for ct, valid in valid_mask.items() if valid), key=lambda ct: latent_value[ct], default=NO_ACTION)
 
         selections = {
+            # Evaluation-compliance audit fix: the specification's Section 11
+            # requires No Recovery ("nothing at all -- no retry, no contact")
+            # as one of exactly three baselines every comparison must clear,
+            # but this script previously never included it. NO_ACTION always
+            # -- the existing per-policy loop below already correctly
+            # resolves NO_ACTION to realized_recovered=False/amount=0.0 for
+            # every other policy, so this needed no other new code.
+            "no_recovery": NO_ACTION,
             "fixed_retry": fixed_sel, "rule_based": rule_sel,
             "day8_model_b_alone": model_alone_decision.selected_candidate_type,
             "day9_original_fallback": day9_decision.selected_candidate_type,
@@ -294,7 +302,31 @@ def summarize_realized(events: pd.DataFrame) -> dict:
         summary[name] = {"total_recovered_rs": total, "recovery_rate": float(events[f"{name}__realized_recovered"].mean())}
     fixed_total = summary["fixed_retry"]["total_recovered_rs"]
     for name in POLICY_NAMES:
+        # incremental_rs_vs_fixed_retry stays the pre-existing field name/
+        # meaning unchanged (the dashboard and other callers already read
+        # it) -- these two are purely additive, per specification Section 12
+        # ("Incremental₹(Agent, B)" is defined against EACH baseline B, not
+        # just Fixed Retry).
         summary[name]["incremental_rs_vs_fixed_retry"] = summary[name]["total_recovered_rs"] - fixed_total
+        summary[name]["incremental_rs_vs_rule_based"] = summary[name]["total_recovered_rs"] - summary["rule_based"]["total_recovered_rs"]
+        summary[name]["incremental_rs_vs_no_recovery"] = summary[name]["total_recovered_rs"] - summary["no_recovery"]["total_recovered_rs"]
+
+        # Recovery lift (specification Section 12): absolute is always
+        # defined; relative-% is only meaningful against Fixed Retry and
+        # Rule-Based (No Recovery's rate is always 0 by construction, so a
+        # relative/% lift against it would be a division by zero -- the
+        # specification itself excludes that comparison from the relative form).
+        summary[name]["recovery_rate_absolute_lift_vs_fixed_retry"] = summary[name]["recovery_rate"] - summary["fixed_retry"]["recovery_rate"]
+        summary[name]["recovery_rate_absolute_lift_vs_rule_based"] = summary[name]["recovery_rate"] - summary["rule_based"]["recovery_rate"]
+        summary[name]["recovery_rate_absolute_lift_vs_no_recovery"] = summary[name]["recovery_rate"] - summary["no_recovery"]["recovery_rate"]
+        summary[name]["recovery_rate_relative_lift_pct_vs_fixed_retry"] = (
+            (summary[name]["recovery_rate"] - summary["fixed_retry"]["recovery_rate"]) / summary["fixed_retry"]["recovery_rate"] * 100
+            if summary["fixed_retry"]["recovery_rate"] else None
+        )
+        summary[name]["recovery_rate_relative_lift_pct_vs_rule_based"] = (
+            (summary[name]["recovery_rate"] - summary["rule_based"]["recovery_rate"]) / summary["rule_based"]["recovery_rate"] * 100
+            if summary["rule_based"]["recovery_rate"] else None
+        )
     return summary
 
 
@@ -383,12 +415,19 @@ def summarize_contact_and_intervention_metrics(events: pd.DataFrame) -> dict:
 def summarize_cost_per_recovery(events: pd.DataFrame, contact_metrics: dict) -> dict:
     """
     Specification formula (section 12): `[Σ contact cost + Σ network/
-    compliance fees] / (# recovered)`. Network/compliance fees are ₹0 BY
-    CONSTRUCTION here -- this evaluation script never routes events through
-    the live compliance gate (policy/compliance.py) at all, matching the
-    specification's own "should be ₹0 by construction if the compliance
-    gate works" framing exactly (a non-zero value would be a bug, not
-    modeled cost). Contact cost uses policy/costs.py::contact_cost, at the
+    compliance fees] / (# recovered)`. Network/compliance fees are reported
+    as ₹0 for every policy -- HONESTLY, this is because this evaluation
+    layer never routes any synthetic event through the live compliance gate
+    (policy/compliance.py) at all (that gate is exercised by
+    recovery/orchestrator.py's own, separately-tested live/operational path,
+    tests/test_compliance.py, tests/test_compliance_v2.py -- not by this
+    synthetic batch evaluator). So this ₹0 should be read as "the gate was
+    never invoked here, hence nothing to charge," NOT as "the gate ran and
+    verifiably passed with zero fees" -- the specification's own "should be
+    ₹0 by construction if the compliance gate works" framing describes what
+    a LIVE, gate-exercised evaluation would show; this synthetic evaluator
+    doesn't currently exercise the gate at all, so it cannot itself verify
+    that claim. Contact cost uses policy/costs.py::contact_cost, at the
     specification's own disclosed ₹0.135/WhatsApp-message rate -- ₹0 for
     every policy with no communication modeled in this evaluation layer.
     """
@@ -441,6 +480,28 @@ def summarize_statistical_tests(
         policy_a=deployed_policy, policy_b=baseline_policy, metric_name="realized_rs_recovered",
         n_resamples=n_resamples, seed=seed, confidence_level=confidence_level,
     )
+    # Evaluation-compliance audit fix: the specification requires the agent
+    # be checked against ALL THREE baselines with statistical evidence, not
+    # just the headline Fixed Retry comparison above (which stays completely
+    # unchanged -- same top-level keys, same values -- so nothing that
+    # already reads statistical_tests["mcnemar"]/["bootstrap_ci"], including
+    # ui/app.py's dashboard section, needs to change). These two additional
+    # pairs are purely additive, under their own sub-key.
+    additional_comparisons = {}
+    for other_baseline in ("rule_based", "no_recovery"):
+        other_mcnemar = mcnemar_test(
+            events[f"{deployed_policy}__realized_recovered"].tolist(),
+            events[f"{other_baseline}__realized_recovered"].tolist(),
+            policy_a=deployed_policy, policy_b=other_baseline, exact=True,
+        )
+        other_bootstrap = bootstrap_delta_ci(
+            events[f"{deployed_policy}__realized_amount_recovered"].to_numpy(),
+            events[f"{other_baseline}__realized_amount_recovered"].to_numpy(),
+            policy_a=deployed_policy, policy_b=other_baseline, metric_name="realized_rs_recovered",
+            n_resamples=n_resamples, seed=seed, confidence_level=confidence_level,
+        )
+        additional_comparisons[other_baseline] = {"mcnemar": other_mcnemar.to_dict(), "bootstrap_ci": other_bootstrap.to_dict()}
+
     return {
         "population": {
             "held_out_split": "test",
@@ -449,13 +510,20 @@ def summarize_statistical_tests(
         },
         "mcnemar": mcnemar_result.to_dict(),
         "bootstrap_ci": bootstrap_result.to_dict(),
+        # vs Rule-Based and vs No Recovery, same test, same held-out events,
+        # same deployed policy -- specification Section 7/Section 11 ("must
+        # clear all three, not just the easiest one").
+        "additional_comparisons": additional_comparisons,
         "interpretation_note": (
             "Both tests quantify statistical uncertainty WITHIN this SYNTHETIC COUNTERFACTUAL "
             "EVALUATION's held-out test split (n={n}) -- they do not establish, and must never be cited "
             "as establishing, real-world Razorpay production superiority. McNemar's test is restricted to "
             "the paired binary realized_recovered outcome (never applied to the continuous ₹ amounts, "
-            "which is what the bootstrap CI is for instead)."
-        ).format(n=len(events)),
+            "which is what the bootstrap CI is for instead). additional_comparisons repeats both tests for "
+            "{deployed} vs rule_based and {deployed} vs no_recovery, on the identical held-out events, so "
+            "the agent's standing against all three specification-required baselines is reported, not just "
+            "the headline Fixed Retry pair above."
+        ).format(n=len(events), deployed=deployed_policy),
     }
 
 

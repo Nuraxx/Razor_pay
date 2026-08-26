@@ -55,7 +55,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from app.logging_config import log
-from app.models import AuditLog, LLMInvocation, PolicyDecision, PromiseToPay
+from app.models import AuditLog, LLMInvocation, PolicyDecision, PromiseToPay, RecoveryOutcome
 from classification.rules import HARD_DECLINE, classify
 from llm.client import LLMClient
 from llm.service import generate_outreach_microcopy_and_log
@@ -353,6 +353,36 @@ def orchestrate_recovery(
         original_candidate_type=policy_row.selected_candidate_type,
         original_candidate_datetime=policy_row.selected_candidate_datetime,
     )
+
+    # --- 6b. Generalized outcome tracking (Track-03, additive) -------------
+    # app.models.RecoveryOutcome's own docstring: "the generalized revenue-
+    # outcome model, shared by every domain (payment_failed included)" --
+    # this backend never confirms a real Razorpay payment (payment_action is
+    # recorded only, never executed), so this row stays honestly PENDING/
+    # None/unconfirmed_pending for every live event, matching the exact same
+    # binding rule recovery/revenue_orchestrator.py follows for the 4 newer
+    # domains -- including its existence check, since orchestrate_recovery
+    # can be invoked more than once for the same event_id (e.g. a manual
+    # reprocess) and every other write in this function is already
+    # idempotent; a bare insert here would silently duplicate outcome rows.
+    existing_outcome = (
+        db.query(RecoveryOutcome)
+        .filter(RecoveryOutcome.event_id == event.event_id, RecoveryOutcome.event_type == "payment_failed")
+        .first()
+    )
+    if existing_outcome is None:
+        db.add(
+            RecoveryOutcome(
+                event_id=event.event_id,
+                event_type="payment_failed",
+                at_risk_amount=event.amount,
+                recovered_amount=None,
+                retained_amount=None,
+                lost_amount=None,
+                recovery_status="NO_ACTION" if final_status == "NO_ACTION" else "PENDING",
+                confirmed_by="unconfirmed_pending",
+            )
+        )
 
     db.add(
         AuditLog(

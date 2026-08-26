@@ -45,7 +45,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db import Base
-from app.models import AuditLog, FailureEvent, LLMInvocation, PolicyDecision, PromiseToPay, RawEvent
+from app.models import AuditLog, FailureEvent, LLMInvocation, PolicyDecision, PromiseToPay, RawEvent, RevenueRiskEvent
 from classification.rules import classify
 from llm.client import LLMClient, LLMProviderError
 from model.candidate_preprocessing import PROJECT_ROOT
@@ -330,27 +330,64 @@ def get_live_system_status() -> dict:
     return status
 
 
+def _get_orchestrated_raw_event_ids(db) -> set[int]:
+    """Raw events that reached SOME real processing path. There are TWO
+    (recovery/webhook_pipeline.py::process_raw_event): a subscription-linked
+    payment.failed creates a FailureEvent; a no-subscription one-time
+    payment.failed with enough authoritative context (payment_id + amount)
+    creates a RevenueRiskEvent(event_type="payment_failed_no_subscription")
+    instead, matched back to its originating raw_event by payment_id (the
+    same idempotency key recovery/webhook_pipeline.py::_build_one_time_payment_event
+    uses). Before this fix, only the FailureEvent half was counted here,
+    which meant every successfully-orchestrated Payment Link event was
+    misreported as "received, not orchestrated" -- a real dashboard bug,
+    not a display nuance. A payment.captured event is always attempted by
+    confirm_payment_recovery (no eligibility gate), so it's never
+    "unrouted" either."""
+    classified_ids = {row[0] for row in db.query(FailureEvent.raw_event_id).all()}
+    routed_payment_ids = {
+        row[0] for row in db.query(RevenueRiskEvent.external_id)
+        .filter(RevenueRiskEvent.event_type == "payment_failed_no_subscription").all()
+        if row[0] is not None
+    }
+    if routed_payment_ids:
+        classified_ids |= {
+            row[0] for row in db.query(RawEvent.id).filter(RawEvent.payment_id.in_(routed_payment_ids)).all()
+        }
+    classified_ids |= {row[0] for row in db.query(RawEvent.id).filter(RawEvent.event_type == "payment.captured").all()}
+    return classified_ids
+
+
 def get_live_kpis() -> dict:
     """Counts derived ONLY from what's actually persisted. Deliberately has
-    NO recovery-rate / recovered-value field -- this schema has no
-    confirmed-payment-succeeded signal (Razorpay would need to deliver a
-    further payment.captured/subscription.charged event this project
-    doesn't yet track); a scheduled retry is not a confirmed recovery, and
-    fabricating that number would violate the brief's "never fake live
-    data." Recovery rate stays exclusively a SYNTHETIC BENCHMARK metric."""
+    NO recovery-rate / recovered-value field of its own -- a scheduled retry
+    is not a confirmed recovery, and fabricating that number would violate
+    the brief's "never fake live data." A real, authoritative
+    payment.captured confirmation signal now exists (see
+    recovery/payment_reconciliation.py) and is reflected in
+    get_live_recovery_outcomes_df()/the Revenue-at-Risk page's Recovery
+    Outcomes section -- this Overview page's own KPI set intentionally
+    stays scoped to what it already showed, rather than growing a second,
+    overlapping recovery-rate figure here. Recovery rate on THIS page stays
+    exclusively a SYNTHETIC BENCHMARK metric (see the Analytics page)."""
     db = get_live_session()
     try:
         total_raw_events = db.query(RawEvent).count()
+        # NOTE: this already counts PolicyDecision rows across ALL domains
+        # (revenue-risk decisions use the same table, offset-keyed -- see
+        # policy/policy_decision_store.py) -- it was never actually
+        # "Subscriptions-only scope" despite that label; see ui/app.py's
+        # kpi_card call site, now corrected to say so honestly.
         total_decisions = db.query(PolicyDecision).count()
         retry_actions = db.query(PolicyDecision).filter(PolicyDecision.selected_candidate_type != "NO_ACTION").count()
-        classified_raw_ids = {row[0] for row in db.query(FailureEvent.raw_event_id).all()}
         all_raw_ids = {row[0] for row in db.query(RawEvent.id).all()}
+        orchestrated_raw_ids = _get_orchestrated_raw_event_ids(db)
         return {
             "failed_payments": total_raw_events,
             "policy_decisions": total_decisions,
             "retry_actions": retry_actions,
             "no_action": total_decisions - retry_actions,
-            "received_not_orchestrated": len(all_raw_ids - classified_raw_ids),
+            "received_not_orchestrated": len(all_raw_ids - orchestrated_raw_ids),
         }
     finally:
         db.close()
@@ -454,9 +491,17 @@ def get_live_recovery_queue_df(limit: int = 200) -> pd.DataFrame:
 def get_live_event_detail(event_id) -> dict | None:
     """Same shape get_event_detail (demo path) already returns, plus the
     raw_events/failure_events rows a live event actually needs (the demo
-    path's event_id IS the CSV row, so it never needed this join)."""
+    path's event_id IS the CSV row, so it never needed this join).
+
+    `event_id` is cast to a plain `int` up front -- a value read back out of
+    a pandas DataFrame cell (e.g. a `st.dataframe` row-selection callback, or
+    a table built by get_live_recovery_queue_df) is a `numpy.int64`, which
+    SQLite's DBAPI adapter does not bind the same way as a native `int` --
+    the `==` filter below silently matches zero rows instead of raising,
+    so this returned None for every numpy-typed caller until this cast."""
     db = get_live_session()
     try:
+        event_id = int(event_id)
         policy_row = db.query(PolicyDecision).filter(PolicyDecision.event_id == event_id).first()
         if policy_row is None:
             return None
@@ -474,17 +519,30 @@ def get_live_event_detail(event_id) -> dict | None:
 
 
 def get_live_unrouted_raw_events_df(limit: int = 50) -> pd.DataFrame:
-    """Raw events that were stored but never reached classification/policy
-    at all -- e.g. a Payment Link `payment.failed` with no subscription_id
-    (recovery/webhook_pipeline.py's own documented scope: Subscriptions
-    only). Surfaced explicitly rather than silently vanishing from every
-    other live table -- accurately representing actual backend state
-    instead of implying a policy decision happened when it didn't."""
+    """Raw events that were stored but genuinely never reached ANY
+    processing path -- e.g. a payment.failed with no subscription_id AND
+    no payment_id/amount to act on (recovery/webhook_pipeline.py's
+    OUTCOME_SKIPPED_INSUFFICIENT_CONTEXT), or an unsupported event_type.
+    A no-subscription Payment Link WITH enough context (payment_id +
+    amount) is NOT unrouted -- it reaches the one-time-payment
+    RevenueRiskEvent path (see _get_orchestrated_raw_event_ids) and is
+    correctly excluded from this table. Surfaced explicitly rather than
+    silently vanishing from every other live table -- accurately
+    representing actual backend state instead of implying a policy
+    decision happened when it didn't."""
     db = get_live_session()
     try:
-        classified_raw_ids = {row[0] for row in db.query(FailureEvent.raw_event_id).all()}
+        orchestrated_raw_ids = _get_orchestrated_raw_event_ids(db)
         rows = db.query(RawEvent).order_by(RawEvent.id.desc()).limit(limit * 4).all()
-        unrouted = [r for r in rows if r.id not in classified_raw_ids][:limit]
+        unrouted = [r for r in rows if r.id not in orchestrated_raw_ids][:limit]
+
+        def _reason(r: RawEvent) -> str:
+            if r.event_type not in ("payment.failed", "payment.captured"):
+                return "unsupported event_type"
+            if not r.subscription_id and (not r.payment_id or r.amount is None):
+                return "insufficient context -- no subscription_id and no payment_id/amount to act on"
+            return "not yet processed"
+
         return pd.DataFrame.from_records(
             [
                 {
@@ -495,13 +553,7 @@ def get_live_unrouted_raw_events_df(limit: int = 50) -> pd.DataFrame:
                     "subscription_id": r.subscription_id,
                     "amount_rupees": (r.amount or 0) / 100.0,
                     "error_reason": r.error_reason,
-                    "reason_not_orchestrated": (
-                        "no subscription_id -- Subscriptions-only scope"
-                        if not r.subscription_id
-                        else "unsupported event_type"
-                        if r.event_type != "payment.failed"
-                        else "not yet processed"
-                    ),
+                    "reason_not_orchestrated": _reason(r),
                 }
                 for r in unrouted
             ]
@@ -583,6 +635,428 @@ def get_live_communications_df(limit: int = 200) -> pd.DataFrame:
         return df
     finally:
         db.close()
+
+
+# Razorpay's own documented ID format: `<entity>_<14+ alphanumeric chars>`,
+# no further underscores, no human-readable words. This project has no
+# synthetic/live flag column on raw_events, so this heuristic is the only
+# way to tell a genuine Razorpay Test Mode delivery apart from a
+# locally-triggered test/demo webhook call for Overview's live pipeline
+# summary. Every synthetic/test ID used anywhere in this codebase or its
+# verification scripts (e.g. "evt_OllamaLiveTest_1787723453",
+# "sub_DemoLLM001") contains an extra underscore or a human-readable suffix
+# and fails this pattern -- conservative in the safe direction: an ID is
+# only ever labeled "live" when it plausibly IS Razorpay's own format;
+# nothing synthetic is ever mislabeled as real.
+_RAZORPAY_ID_RE = re.compile(r"^[a-z]+_[A-Za-z0-9]{14,}$")
+
+
+def _looks_like_real_razorpay_id(value: str | None) -> bool:
+    return bool(value) and bool(_RAZORPAY_ID_RE.match(value))
+
+
+def get_live_llm_summary() -> dict:
+    """Overview's "LLM CALLS" KPI card -- total llm_invocations count plus
+    the single most recent invocation's provider/model/task/success, read
+    directly off llm_invocations every call. Never hardcoded and never
+    inferred from the currently-configured LLM_PROVIDER -- a provider can be
+    configured but never yet actually called, or its most recent real call
+    could have failed, and only a real row here can say which."""
+    db = get_live_session()
+    try:
+        total = db.query(LLMInvocation).count()
+        latest = db.query(LLMInvocation).order_by(LLMInvocation.id.desc()).first()
+        return {
+            "total_invocations": total,
+            "latest_provider": latest.provider if latest else None,
+            "latest_model": latest.model_name if latest else None,
+            "latest_task": latest.task_name if latest else None,
+            "latest_success": latest.success if latest else None,
+        }
+    finally:
+        db.close()
+
+
+def get_live_pipeline_snapshot() -> dict | None:
+    """Overview's "Latest recovery event" pipeline card -- the single most
+    recent live PolicyDecision (payment_failed path, the same scope
+    get_live_recovery_queue_df already covers for the Recovery Queue page),
+    re-using that function plus get_live_event_detail rather than
+    duplicating any SQL. Every stage below is read straight off the real
+    raw_events / audit_log / llm_invocations rows for that one event --
+    never a fabricated or assumed stage. Returns None only when no live
+    policy decision exists yet at all (a normal, displayable empty state)."""
+    queue_df = get_live_recovery_queue_df(limit=1)
+    if queue_df.empty:
+        return None
+    latest = queue_df.iloc[0]
+    event_id = latest["event_id"]
+
+    detail = get_live_event_detail(event_id)
+    if detail is None:
+        return None
+    raw_row, audit_rows, llm_rows = detail["raw"], detail["audit"], detail["llm"]
+
+    compliance_audit = next((a for a in reversed(audit_rows) if a.action == "orchestrator_compliance"), None)
+    compliance_fields = extract_compliance_fields(compliance_audit.reason if compliance_audit else None)
+    payment_allowed = compliance_fields.get("payment_allowed")
+    communication_allowed = compliance_fields.get("communication_allowed")
+    if payment_allowed is None or communication_allowed is None:
+        compliance_display = None
+    elif payment_allowed == "True" and communication_allowed == "True":
+        compliance_display = "ALLOWED"
+    elif payment_allowed == "False" and communication_allowed == "False":
+        compliance_display = "BLOCKED"
+    else:
+        compliance_display = (
+            f"PARTIAL (payment {'allowed' if payment_allowed == 'True' else 'blocked'}, "
+            f"communication {'allowed' if communication_allowed == 'True' else 'blocked'})"
+        )
+
+    comm = next((r for r in reversed(llm_rows) if r.task_name == "outreach_microcopy"), None)
+    message_text = None
+    if comm is not None:
+        try:
+            message_text = json.loads(comm.structured_output or "{}").get("message_text")
+        except ValueError:
+            message_text = None
+
+    return {
+        "event_id": event_id,
+        "razorpay_event_id": raw_row.razorpay_event_id if raw_row else None,
+        "is_live_razorpay_id": _looks_like_real_razorpay_id(raw_row.razorpay_event_id if raw_row else None),
+        "payment_id": raw_row.payment_id if raw_row else None,
+        "received_at": raw_row.received_at if raw_row else None,
+        "error_reason": None if pd.isna(latest["error_reason"]) else latest["error_reason"],
+        "amount_rupees": latest["amount_rupees"],
+        "classification_bucket": latest["classification_bucket"],
+        "selected_candidate_type": latest["selected_candidate_type"],
+        "decision_source": latest["decision_source"],
+        "compliance_display": compliance_display,
+        "llm_provider": comm.provider if comm is not None else None,
+        "llm_model": comm.model_name if comm is not None else None,
+        "llm_task": comm.task_name if comm is not None else None,
+        "llm_success": comm.success if comm is not None else None,
+        "communication_action": latest["communication_action"],
+        "communication_message": message_text,
+        "final_status": latest["final_status"],
+        "decided_at": latest["decided_at"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Track-03: LIVE DATABASE queries for the new revenue-risk domains
+# (checkout_abandoned / mandate_failed / receivable_overdue /
+# promise_to_pay_broken). Same conventions as the payment_failed queries
+# above: get_live_* prefix, fresh session per call, no caching, never falls
+# back to demo data.
+# ---------------------------------------------------------------------------
+
+def get_live_revenue_risk_events_df(limit: int = 200) -> pd.DataFrame:
+    from app.models import RevenueRiskEvent
+
+    db = get_live_session()
+    try:
+        rows = db.query(RevenueRiskEvent).order_by(RevenueRiskEvent.id.desc()).limit(limit).all()
+        return pd.DataFrame.from_records([
+            {
+                "id": r.id, "event_type": r.event_type, "external_id": r.external_id, "customer_ref": r.customer_ref,
+                "amount": r.amount, "currency": r.currency, "occurred_at": r.occurred_at, "received_at": r.received_at,
+                "reason": r.reason, "status": r.status,
+            }
+            for r in rows
+        ])
+    finally:
+        db.close()
+
+
+def get_live_revenue_recovery_queue_df(limit: int = 200) -> pd.DataFrame:
+    """Joins policy_decisions to revenue_risk_events for the 4 new domains
+    ONLY -- filtered on the exact REVENUE_DOMAIN_DECISION_SOURCES set before
+    joining, never a "rule_%" wildcard (see that constant's own docstring
+    for why: policy_decisions.event_id has no real FK, and a loose filter
+    could join an unrelated payment_failed row to a same-numbered
+    revenue_risk_events row by pure coincidence)."""
+    from app.models import PolicyDecision, RevenueRiskEvent
+    from policy.policy_decision_store import REVENUE_DOMAIN_EVENT_ID_OFFSET
+    from policy.revenue_recovery_policy import REVENUE_DOMAIN_DECISION_SOURCES
+
+    db = get_live_session()
+    try:
+        rows = (
+            db.query(PolicyDecision, RevenueRiskEvent)
+            .join(RevenueRiskEvent, PolicyDecision.event_id == RevenueRiskEvent.id + REVENUE_DOMAIN_EVENT_ID_OFFSET)
+            .filter(PolicyDecision.decision_source.in_(REVENUE_DOMAIN_DECISION_SOURCES))
+            .order_by(PolicyDecision.id.desc())
+            .limit(limit)
+            .all()
+        )
+        return pd.DataFrame.from_records([
+            {
+                "event_id": rre.id, "event_type": rre.event_type, "customer_ref": rre.customer_ref,
+                "amount": rre.amount, "selected_candidate_type": p.selected_candidate_type,
+                "selected_candidate_datetime": p.selected_candidate_datetime,
+                "classification_bucket": p.classification_bucket, "decision_source": p.decision_source,
+                "model_version": p.model_version, "predicted_recovery_probability": p.predicted_recovery_probability,
+                "decided_at": p.decided_at,
+            }
+            for p, rre in rows
+        ])
+    finally:
+        db.close()
+
+
+_REVENUE_COMPLIANCE_REASON_PATTERN = re.compile(
+    r"payment_verdict=(?P<payment_verdict>\S+)\s+payment_reason=(?P<payment_reason>.*?)\s*\|\s*"
+    r"communication_verdict=(?P<communication_verdict>\S+)\s+communication_reason=(?P<communication_reason>.*?)\s*\|\s*"
+    r"rule_version=(?P<rule_version>\S+)"
+)
+
+
+def extract_revenue_compliance_fields(reason: str | None) -> dict:
+    """Same convention as extract_compliance_fields above, but tailored to
+    recovery/revenue_orchestrator.py's own `actor="revenue_compliance"`
+    audit reason format (payment_verdict=.../communication_verdict=...),
+    which is a different shape from the payment_failed path's
+    payment_action_allowed=... format that function parses."""
+    if not reason:
+        return {}
+    match = _REVENUE_COMPLIANCE_REASON_PATTERN.search(reason)
+    return match.groupdict() if match else {}
+
+
+def get_live_revenue_pipeline_snapshot() -> dict | None:
+    """Same idea as get_live_pipeline_snapshot() above, but for the most
+    recent event across the OTHER 5 unified-ML domains (checkout_abandoned/
+    mandate_failed/receivable_overdue/promise_to_pay_broken, plus the
+    one-time-payment/Payment-Link path) -- proves the SAME live event's ML
+    score, policy candidate, compliance verdict, and LLM outcome all line up
+    end to end, not just the payment_failed-with-subscription path. Every
+    value is read straight off the real policy_decisions/audit_log/
+    llm_invocations rows for that one event -- never fabricated. Returns
+    None only when no live revenue-risk decision exists yet at all."""
+    from app.models import AuditLog, LLMInvocation, PolicyDecision, RevenueRiskEvent
+    from policy.policy_decision_store import REVENUE_DOMAIN_EVENT_ID_OFFSET
+    from policy.revenue_recovery_policy import REVENUE_DOMAIN_DECISION_SOURCES
+
+    db = get_live_session()
+    try:
+        row = (
+            db.query(PolicyDecision, RevenueRiskEvent)
+            .join(RevenueRiskEvent, PolicyDecision.event_id == RevenueRiskEvent.id + REVENUE_DOMAIN_EVENT_ID_OFFSET)
+            .filter(PolicyDecision.decision_source.in_(REVENUE_DOMAIN_DECISION_SOURCES))
+            .order_by(PolicyDecision.id.desc())
+            .first()
+        )
+        if row is None:
+            return None
+        policy, rre = row
+        stored_event_id = rre.id + REVENUE_DOMAIN_EVENT_ID_OFFSET
+
+        audit_rows = db.query(AuditLog).filter(AuditLog.failure_event_id == stored_event_id).order_by(AuditLog.id).all()
+        llm_rows = db.query(LLMInvocation).filter(LLMInvocation.event_id == stored_event_id).order_by(LLMInvocation.id).all()
+
+        compliance_audit = next((a for a in reversed(audit_rows) if a.action == "revenue_orchestrator_compliance"), None)
+        compliance_fields = extract_revenue_compliance_fields(compliance_audit.reason if compliance_audit else None)
+        payment_verdict = compliance_fields.get("payment_verdict")
+        communication_verdict = compliance_fields.get("communication_verdict")
+        compliance_display = f"{payment_verdict} / {communication_verdict}" if payment_verdict else None
+
+        comm = next((r for r in reversed(llm_rows) if r.task_name in ("outreach_microcopy", "voice_script_generation")), None)
+        message_text = None
+        if comm is not None:
+            try:
+                message_text = json.loads(comm.structured_output or "{}").get("message_text") or json.loads(comm.structured_output or "{}").get("script_text")
+            except ValueError:
+                message_text = None
+
+        final_status_audit = next((a for a in reversed(audit_rows) if a.action == "revenue_orchestrator_final_status"), None)
+        final_status = None
+        if final_status_audit and "final_status=" in (final_status_audit.reason or ""):
+            final_status = final_status_audit.reason.split("final_status=", 1)[1].split(" ", 1)[0]
+
+        def _extract(reason: str | None, key: str) -> str | None:
+            if not reason or f"{key}=" not in reason:
+                return None
+            return reason.split(f"{key}=", 1)[1].split(" ", 1)[0].split("|", 1)[0].strip()
+
+        rule_baseline_candidate = _extract(policy.decision_reason, "rule_baseline_candidate")
+        ml_recommendation = _extract(policy.decision_reason, "ml_recommendation")
+
+        # Three distinct states (see policy/revenue_recovery_policy.py's
+        # decide_for_revenue_risk_event): ML fully decided (USED), ML ran
+        # but the rule-based eligibility/human-review gate overrode it
+        # (CONSULTED_OVERRIDDEN -- ML's own score is still on the row), or
+        # ML never ran at all, e.g. artifact unavailable (FALLBACK). Never
+        # collapse the middle case into "not consulted" -- that's exactly
+        # the bug this distinction exists to avoid.
+        if policy.decision_source == "ml_unified_v1":
+            ml_status = "USED"
+        elif policy.predicted_recovery_probability is not None:
+            ml_status = "CONSULTED_OVERRIDDEN"
+        else:
+            ml_status = "FALLBACK"
+
+        return {
+            "event_id": rre.id,
+            "event_type": rre.event_type,
+            "external_id": rre.external_id,
+            "customer_ref": rre.customer_ref,
+            "amount": rre.amount,
+            "occurred_at": rre.occurred_at,
+            "received_at": rre.received_at,
+            "classification_bucket": policy.classification_bucket,
+            "selected_candidate_type": policy.selected_candidate_type,
+            "decision_source": policy.decision_source,
+            "ml_status": ml_status,
+            "is_ml_sourced": policy.decision_source == "ml_unified_v1",  # kept for backward compatibility; prefer ml_status
+            "rule_baseline_candidate": rule_baseline_candidate,
+            "ml_recommendation": ml_recommendation,
+            "model_version": policy.model_version,
+            "predicted_recovery_probability": policy.predicted_recovery_probability,
+            "expected_recovery_value": policy.expected_recovery_value,
+            "compliance_display": compliance_display,
+            "llm_provider": comm.provider if comm is not None else None,
+            "llm_model": comm.model_name if comm is not None else None,
+            "llm_task": comm.task_name if comm is not None else None,
+            "llm_success": comm.success if comm is not None else None,
+            "communication_message": message_text,
+            "final_status": final_status,
+            "decided_at": policy.decided_at,
+        }
+    finally:
+        db.close()
+
+
+def get_live_revenue_at_risk_kpis() -> dict:
+    """Same honesty rule as get_live_kpis(): counts only, never a fabricated
+    recovery/recovered-amount figure for live data (see
+    app.models.RecoveryOutcome's own binding-rule docstring)."""
+    from app.models import RecoveryOutcome, RevenueRiskEvent
+
+    from sqlalchemy import func
+
+    db = get_live_session()
+    try:
+        total_events = db.query(RevenueRiskEvent).count()
+        type_counts = dict(db.query(RevenueRiskEvent.event_type, func.count(RevenueRiskEvent.id)).group_by(RevenueRiskEvent.event_type).all())
+        outcomes = db.query(RecoveryOutcome).all()
+        total_at_risk = sum(o.at_risk_amount for o in outcomes)
+        pending = sum(1 for o in outcomes if o.recovery_status == "PENDING")
+        no_action = sum(1 for o in outcomes if o.recovery_status == "NO_ACTION")
+        # RECOVERED/LOST/PARTIALLY_RECOVERED only ever appear for demo/synthetic
+        # rows (confirmed_by="demo_synthetic") -- see RecoveryOutcome's binding rule.
+        recovered_synthetic = sum(1 for o in outcomes if o.recovery_status == "RECOVERED" and o.confirmed_by == "demo_synthetic")
+        return {
+            "total_revenue_risk_events": total_events,
+            "by_event_type": type_counts,
+            "total_at_risk_amount": total_at_risk,
+            "pending_cases": pending,
+            "no_action_cases": no_action,
+            "demo_synthetic_recovered_cases": recovered_synthetic,
+        }
+    finally:
+        db.close()
+
+
+def get_live_recovery_timeline_df(limit: int = 200) -> pd.DataFrame:
+    """Chronological feed across BOTH payment_failed (raw_events) and the 4
+    new domains (revenue_risk_events) -- one unified "Recovery Timeline"."""
+    from app.models import RevenueRiskEvent
+
+    db = get_live_session()
+    try:
+        payment_rows = db.query(RawEvent).order_by(RawEvent.id.desc()).limit(limit).all()
+        revenue_rows = db.query(RevenueRiskEvent).order_by(RevenueRiskEvent.id.desc()).limit(limit).all()
+        records = [
+            {"timestamp": r.received_at, "event_type": "payment_failed", "reference": r.payment_id or r.razorpay_event_id, "amount": (r.amount / 100.0) if r.amount else None}
+            for r in payment_rows
+        ] + [
+            {"timestamp": r.received_at, "event_type": r.event_type, "reference": r.external_id, "amount": r.amount}
+            for r in revenue_rows
+        ]
+        df = pd.DataFrame.from_records(records)
+        if not df.empty:
+            df = df.sort_values("timestamp", ascending=False).reset_index(drop=True).head(limit)
+        return df
+    finally:
+        db.close()
+
+
+def get_live_recovery_outcomes_df(limit: int = 200) -> pd.DataFrame:
+    from app.models import RecoveryOutcome
+
+    db = get_live_session()
+    try:
+        rows = db.query(RecoveryOutcome).order_by(RecoveryOutcome.id.desc()).limit(limit).all()
+        return pd.DataFrame.from_records([
+            {
+                "event_id": r.event_id, "event_type": r.event_type, "at_risk_amount": r.at_risk_amount,
+                "recovered_amount": r.recovered_amount, "recovery_status": r.recovery_status,
+                "confirmed_by": r.confirmed_by, "confirmed_payment_id": r.confirmed_payment_id,
+                "observed_at": r.observed_at,
+            }
+            for r in rows
+        ])
+    finally:
+        db.close()
+
+
+def get_live_revenue_by_intervention_df() -> pd.DataFrame:
+    """Revenue At Risk by Intervention -- grouped by selected_candidate_type
+    across the 4 new domains. `recovered_amount` stays None for every live row
+    (see RecoveryOutcome's binding rule) -- this reports AT-RISK amount per
+    intervention type, honestly, not a fabricated recovered figure. Named to
+    match: an earlier "Revenue Recovered by Intervention" label on this same
+    data overclaimed relative to what the table actually shows."""
+    from app.models import PolicyDecision, RevenueRiskEvent
+    from policy.policy_decision_store import REVENUE_DOMAIN_EVENT_ID_OFFSET
+    from policy.revenue_recovery_policy import REVENUE_DOMAIN_DECISION_SOURCES
+
+    db = get_live_session()
+    try:
+        rows = (
+            db.query(PolicyDecision, RevenueRiskEvent)
+            .join(RevenueRiskEvent, PolicyDecision.event_id == RevenueRiskEvent.id + REVENUE_DOMAIN_EVENT_ID_OFFSET)
+            .filter(PolicyDecision.decision_source.in_(REVENUE_DOMAIN_DECISION_SOURCES))
+            .all()
+        )
+        records = [{"intervention": p.selected_candidate_type, "amount": rre.amount or 0.0} for p, rre in rows]
+        df = pd.DataFrame.from_records(records)
+        if df.empty:
+            return df
+        return df.groupby("intervention", as_index=False).agg(case_count=("amount", "count"), total_at_risk_amount=("amount", "sum"))
+    finally:
+        db.close()
+
+
+def get_live_customer_recovery_queue_df(limit: int = 200) -> pd.DataFrame:
+    """One row per customer_ref with their most recent revenue-risk case --
+    a customer-centric view of the same recovery queue."""
+    from app.models import RevenueRiskEvent
+
+    db = get_live_session()
+    try:
+        rows = db.query(RevenueRiskEvent).order_by(RevenueRiskEvent.customer_ref, RevenueRiskEvent.id.desc()).limit(limit).all()
+        df = pd.DataFrame.from_records([
+            {"customer_ref": r.customer_ref, "event_type": r.event_type, "amount": r.amount, "status": r.status, "received_at": r.received_at}
+            for r in rows
+        ])
+        if df.empty:
+            return df
+        return df.sort_values("received_at", ascending=False).drop_duplicates(subset="customer_ref", keep="first").reset_index(drop=True)
+    finally:
+        db.close()
+
+
+def run_revenue_demo_generator(model=None) -> dict:
+    """Thin UI wrapper over recovery/demo_generator.py -- parallel to
+    run_demo_scenario() above. Defaults to a throwaway in-memory DB (never
+    the real DATABASE_URL) unless the caller explicitly opts into targeting
+    the live database."""
+    from recovery.demo_generator import generate_demo_revenue_risk_events
+
+    return generate_demo_revenue_risk_events(model=model)
 
 
 _COMPLIANCE_REASON_PATTERN = re.compile(

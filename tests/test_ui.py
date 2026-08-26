@@ -445,13 +445,14 @@ def live_db_session_factory(monkeypatch):
 def _seed_live_event(
     factory, *, suffix="1", subscription_id="sub_live_1", error_reason="insufficient_fund",
     classification_bucket="retryable_soft", selected_candidate_type="plus_1_day_morning",
-    with_llm=True, with_blocked_comm=False,
+    with_llm=True, with_blocked_comm=False, llm_success=True, llm_provider="mock", llm_model="mock",
+    razorpay_event_id=None,
 ):
     from app.models import AuditLog, FailureEvent, LLMInvocation, PolicyDecision, RawEvent
 
     db = factory()
     raw = RawEvent(
-        razorpay_event_id=f"evt_test_{suffix}", event_type="payment.failed", payment_id=f"pay_test_{suffix}",
+        razorpay_event_id=razorpay_event_id or f"evt_test_{suffix}", event_type="payment.failed", payment_id=f"pay_test_{suffix}",
         subscription_id=subscription_id, amount=250000, currency="INR", error_reason=error_reason,
         error_source="gateway", error_step="payment_authorization", signature_verified=True, raw_payload="{}",
     )
@@ -479,8 +480,8 @@ def _seed_live_event(
     if with_llm:
         db.add(
             LLMInvocation(
-                event_id=failure.id, task_name="outreach_microcopy", model_name="mock", prompt_version="v1",
-                provider="mock", success=True,
+                event_id=failure.id, task_name="outreach_microcopy", model_name=llm_model, prompt_version="v1",
+                provider=llm_provider, success=llm_success,
                 structured_output=json.dumps({"message_text": "hi", "language": "en", "failure_bucket": classification_bucket, "customer_segment": "mid"}),
             )
         )
@@ -579,14 +580,16 @@ def test_get_live_event_detail_unknown_event_returns_none(live_db_session_factor
     assert data.get_live_event_detail(999999) is None
 
 
-def test_get_live_unrouted_raw_events_df_flags_missing_subscription(live_db_session_factory):
+def test_get_live_unrouted_raw_events_df_flags_genuinely_insufficient_context(live_db_session_factory):
+    # No subscription_id AND no payment_id/amount -- genuinely nothing to
+    # act on (recovery/webhook_pipeline.py's OUTCOME_SKIPPED_INSUFFICIENT_CONTEXT).
     from app.models import RawEvent
 
     db = live_db_session_factory()
     db.add(
         RawEvent(
-            razorpay_event_id="evt_unrouted", event_type="payment.failed", payment_id="pay_unrouted",
-            subscription_id=None, amount=10000, currency="INR", error_reason="payment_failed",
+            razorpay_event_id="evt_unrouted", event_type="payment.failed", payment_id=None,
+            subscription_id=None, amount=None, currency="INR", error_reason="payment_failed",
             signature_verified=True, raw_payload="{}",
         )
     )
@@ -595,12 +598,53 @@ def test_get_live_unrouted_raw_events_df_flags_missing_subscription(live_db_sess
 
     df = data.get_live_unrouted_raw_events_df()
     assert len(df) == 1
-    assert "no subscription_id" in df.iloc[0]["reason_not_orchestrated"]
+    assert "insufficient context" in df.iloc[0]["reason_not_orchestrated"]
 
 
 def test_get_live_unrouted_raw_events_df_excludes_classified_events(live_db_session_factory):
     _seed_live_event(live_db_session_factory)  # this one IS classified/orchestrated
     assert data.get_live_unrouted_raw_events_df().empty
+
+
+def test_get_live_unrouted_raw_events_df_excludes_orchestrated_payment_link_events(live_db_session_factory):
+    # Regression test: a Payment Link payment.failed with NO subscription_id
+    # but a real payment_id/amount reaches the one-time-payment
+    # RevenueRiskEvent path (recovery/webhook_pipeline.py) -- it is NOT
+    # "unrouted" even though it never creates a FailureEvent row. Before the
+    # fix, _get_orchestrated_raw_event_ids only checked FailureEvent, so
+    # every successfully-orchestrated Payment Link event was misreported
+    # here as a dead end.
+    from datetime import datetime
+
+    from app.models import PolicyDecision, RawEvent, RevenueRiskEvent
+    from policy.policy_decision_store import REVENUE_DOMAIN_EVENT_ID_OFFSET
+
+    db = live_db_session_factory()
+    raw = RawEvent(
+        razorpay_event_id="evt_payment_link_routed", event_type="payment.failed", payment_id="pay_link_routed",
+        subscription_id=None, amount=10000, currency="INR", error_reason="insufficient_fund",
+        signature_verified=True, raw_payload="{}",
+    )
+    db.add(raw)
+    db.flush()
+    rre = RevenueRiskEvent(
+        idempotency_key="payment_failed_no_subscription:pay_link_routed", event_type="payment_failed_no_subscription",
+        external_id="pay_link_routed", customer_ref="pay_link_routed", amount=100.0, currency="INR",
+        occurred_at=datetime(2026, 8, 25, 10, 0, 0), reason="insufficient_fund", status="OPEN",
+    )
+    db.add(rre)
+    db.flush()
+    db.add(PolicyDecision(
+        event_id=rre.id + REVENUE_DOMAIN_EVENT_ID_OFFSET, subscription_id="pay_link_routed",
+        selected_candidate_type="payment_link_reminder", policy_version="one-time-payment-v1",
+        decision_reason="test seed", decision_source="ml_unified_v1", classification_bucket="retryable_soft",
+    ))
+    db.commit()
+    db.close()
+
+    assert data.get_live_unrouted_raw_events_df().empty
+    kpis = data.get_live_kpis()
+    assert kpis["received_not_orchestrated"] == 0
 
 
 def test_get_live_communications_df_includes_sent_and_blocked(live_db_session_factory):
@@ -703,3 +747,163 @@ def test_live_fragments_share_the_same_refresh_interval():
         "_audit_log_fragment", "_system_status_fragment",
     ):
         assert callable(getattr(app, fn_name))
+
+
+# ---------------------------------------------------------------------------
+# Overview page: live LLM pipeline visibility (the complete
+# Razorpay -> classification -> ML/policy -> compliance -> LLM ->
+# communication -> audit workflow must be visible on Overview, sourced
+# entirely from real DB rows -- ui/data.py::get_live_llm_summary and
+# get_live_pipeline_snapshot).
+# ---------------------------------------------------------------------------
+
+def test_get_live_llm_summary_empty_db_returns_zero_and_nones(live_db_session_factory):
+    summary = data.get_live_llm_summary()
+    assert summary == {
+        "total_invocations": 0, "latest_provider": None, "latest_model": None,
+        "latest_task": None, "latest_success": None,
+    }
+
+
+def test_get_live_llm_summary_reads_total_and_latest_from_llm_invocations(live_db_session_factory):
+    _seed_live_event(live_db_session_factory, suffix="1", llm_provider="gemini", llm_model="gemini-3.6-flash")
+    _seed_live_event(live_db_session_factory, suffix="2", subscription_id="sub_live_2", llm_provider="ollama", llm_model="qwen3:14b")
+
+    summary = data.get_live_llm_summary()
+    assert summary["total_invocations"] == 2
+    # "latest" must be the most recently INSERTED row, not the first one seeded.
+    assert summary["latest_provider"] == "ollama"
+    assert summary["latest_model"] == "qwen3:14b"
+    assert summary["latest_task"] == "outreach_microcopy"
+    assert summary["latest_success"] is True
+
+
+def test_get_live_llm_summary_latest_success_is_dynamic_not_hardcoded(live_db_session_factory):
+    _seed_live_event(live_db_session_factory, suffix="1", llm_success=True)
+    _seed_live_event(live_db_session_factory, suffix="2", subscription_id="sub_live_2", llm_success=False)
+
+    summary = data.get_live_llm_summary()
+    assert summary["latest_success"] is False  # reflects the newer (failed) invocation, never a stale/hardcoded True
+
+
+def test_get_live_pipeline_snapshot_empty_db_returns_none(live_db_session_factory):
+    assert data.get_live_pipeline_snapshot() is None
+
+
+def test_get_live_pipeline_snapshot_reads_every_stage_from_real_rows(live_db_session_factory):
+    _seed_live_event(
+        live_db_session_factory, error_reason="insufficient_fund", classification_bucket="retryable_soft",
+        selected_candidate_type="payday_window", llm_provider="ollama", llm_model="qwen3:14b",
+    )
+    snapshot = data.get_live_pipeline_snapshot()
+    assert snapshot is not None
+    assert snapshot["error_reason"] == "insufficient_fund"
+    assert snapshot["classification_bucket"] == "retryable_soft"
+    assert snapshot["selected_candidate_type"] == "payday_window"
+    assert snapshot["decision_source"] == "day8_model_b"
+    assert snapshot["compliance_display"] == "ALLOWED"
+    assert snapshot["llm_provider"] == "ollama"
+    assert snapshot["llm_model"] == "qwen3:14b"
+    assert snapshot["llm_success"] is True
+    assert snapshot["communication_action"] == "sent"
+    assert snapshot["final_status"] == "COMMUNICATION_ALLOWED"
+    assert snapshot["communication_message"] == "hi"  # from _seed_live_event's structured_output
+
+
+def test_get_live_pipeline_snapshot_reflects_llm_failure_never_hides_it_as_success(live_db_session_factory):
+    _seed_live_event(live_db_session_factory, llm_provider="ollama", llm_model="qwen3:14b", llm_success=False)
+    snapshot = data.get_live_pipeline_snapshot()
+    assert snapshot["llm_provider"] == "ollama"
+    assert snapshot["llm_success"] is False  # never displayed as success when the fallback was actually used
+
+
+def test_get_live_pipeline_snapshot_handles_blocked_compliance(live_db_session_factory):
+    _seed_live_event(live_db_session_factory, with_llm=False, with_blocked_comm=True)
+    snapshot = data.get_live_pipeline_snapshot()
+    assert snapshot["compliance_display"] == "PARTIAL (payment allowed, communication blocked)"
+    assert snapshot["llm_provider"] is None  # compliance blocked the communication -- no LLM job ever ran
+
+
+def test_get_live_pipeline_snapshot_uses_the_most_recently_decided_event(live_db_session_factory):
+    _seed_live_event(live_db_session_factory, suffix="older", selected_candidate_type="plus_1_day_morning")
+    _seed_live_event(live_db_session_factory, suffix="newer", subscription_id="sub_live_2", selected_candidate_type="payday_window")
+    snapshot = data.get_live_pipeline_snapshot()
+    assert snapshot["selected_candidate_type"] == "payday_window"
+
+
+def test_looks_like_real_razorpay_id_accepts_real_format_rejects_synthetic():
+    assert data._looks_like_real_razorpay_id("evt_JXpBs2TMKUJfPz0000") is True
+    assert data._looks_like_real_razorpay_id("pay_MK7hXn2QpRstUv12") is True
+    # every synthetic/test/demo ID actually used anywhere in this codebase
+    # or its verification scripts contains an extra underscore or a
+    # human-readable word -- must never be labeled as a real delivery.
+    assert data._looks_like_real_razorpay_id("evt_test_1") is False
+    assert data._looks_like_real_razorpay_id("evt_OllamaLiveTest_1787723453") is False
+    assert data._looks_like_real_razorpay_id("sub_DemoLLM001") is False
+    assert data._looks_like_real_razorpay_id(None) is False
+    assert data._looks_like_real_razorpay_id("") is False
+
+
+def test_get_live_pipeline_snapshot_labels_synthetic_id_correctly(live_db_session_factory):
+    _seed_live_event(live_db_session_factory, razorpay_event_id="evt_OllamaLiveTest_1787723453")
+    snapshot = data.get_live_pipeline_snapshot()
+    assert snapshot["is_live_razorpay_id"] is False
+
+
+def test_get_live_pipeline_snapshot_labels_real_format_id_correctly(live_db_session_factory):
+    _seed_live_event(live_db_session_factory, razorpay_event_id="evt_JXpBs2TMKUJfPz0000")
+    snapshot = data.get_live_pipeline_snapshot()
+    assert snapshot["is_live_razorpay_id"] is True
+
+
+def test_overview_page_renders_with_seeded_live_pipeline(live_db_session_factory):
+    """Scenario 1 + 5: Overview must render without exception AND the new
+    pipeline/LLM sections must actually reflect the seeded live rows, not
+    just avoid crashing -- verified via AppTest's rendered markdown."""
+    from streamlit.testing.v1 import AppTest
+
+    _seed_live_event(live_db_session_factory, llm_provider="ollama", llm_model="qwen3:14b")
+
+    at = AppTest.from_file(APP_PATH, default_timeout=120)
+    at.run()
+    assert not at.exception
+
+    rendered = " ".join(md.value for md in at.markdown) + " ".join(c.value for c in at.caption)
+    assert "qwen3:14b" in rendered
+    assert "ollama" in rendered
+
+
+def test_overview_page_renders_when_no_llm_invocation_exists(live_db_session_factory):
+    """Scenario 7: no LLM invocation anywhere yet -- the LLM KPI card and
+    the pipeline/communication sections must degrade gracefully, never raise."""
+    from streamlit.testing.v1 import AppTest
+
+    _seed_live_event(live_db_session_factory, with_llm=False)
+
+    at = AppTest.from_file(APP_PATH, default_timeout=120)
+    at.run()
+    assert not at.exception
+
+
+def test_overview_page_renders_when_llm_failed_and_fallback_used(live_db_session_factory):
+    """Scenario 8: the most recent LLM call failed (deterministic fallback
+    was used) -- Overview must still render cleanly and must never display
+    that failed call as a success."""
+    from streamlit.testing.v1 import AppTest
+
+    _seed_live_event(live_db_session_factory, llm_provider="ollama", llm_model="qwen3:14b", llm_success=False)
+
+    at = AppTest.from_file(APP_PATH, default_timeout=120)
+    at.run()
+    assert not at.exception
+
+    snapshot = data.get_live_pipeline_snapshot()
+    assert snapshot["llm_success"] is False
+
+
+def test_overview_page_renders_on_completely_empty_live_database(live_db_session_factory):
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file(APP_PATH, default_timeout=120)
+    at.run()
+    assert not at.exception

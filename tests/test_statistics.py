@@ -223,6 +223,15 @@ class TestStatisticalTestsIntegration:
                 "fixed_retry__realized_amount_recovered": [100.0, 200.0, 0.0, 150.0, 0.0],
                 "day10_improved_fallback__realized_recovered": [True, False, False, True, True],
                 "day10_improved_fallback__realized_amount_recovered": [100.0, 0.0, 0.0, 150.0, 90.0],
+                # Evaluation-compliance audit fix: summarize_statistical_tests
+                # now also computes additional_comparisons vs rule_based and
+                # vs no_recovery (specification Section 7 -- must check all
+                # three baselines), so a realistically-shaped `events` needs
+                # these two policies' columns too, not just the headline pair.
+                "rule_based__realized_recovered": [True, False, False, True, False],
+                "rule_based__realized_amount_recovered": [100.0, 0.0, 0.0, 150.0, 0.0],
+                "no_recovery__realized_recovered": [False, False, False, False, False],
+                "no_recovery__realized_amount_recovered": [0.0, 0.0, 0.0, 0.0, 0.0],
             }
         )
         result = summarize_statistical_tests(events, n_resamples=200, seed=1)
@@ -235,3 +244,33 @@ class TestStatisticalTestsIntegration:
         # b: deployed-only recovered (event 5), c: fixed_retry-only recovered (event 2)
         assert result["mcnemar"]["only_a_recovered"] == 1
         assert result["mcnemar"]["only_b_recovered"] == 1
+
+    def test_summarize_statistical_tests_includes_rule_based_and_no_recovery_comparisons(self):
+        import pandas as pd
+
+        from evaluation.evaluate_decision_engine_v4 import summarize_statistical_tests
+
+        events = pd.DataFrame(
+            {
+                "fixed_retry__realized_recovered": [True, True, False, True, False],
+                "fixed_retry__realized_amount_recovered": [100.0, 200.0, 0.0, 150.0, 0.0],
+                "day10_improved_fallback__realized_recovered": [True, False, False, True, True],
+                "day10_improved_fallback__realized_amount_recovered": [100.0, 0.0, 0.0, 150.0, 90.0],
+                "rule_based__realized_recovered": [True, False, False, True, False],
+                "rule_based__realized_amount_recovered": [100.0, 0.0, 0.0, 150.0, 0.0],
+                "no_recovery__realized_recovered": [False, False, False, False, False],
+                "no_recovery__realized_amount_recovered": [0.0, 0.0, 0.0, 0.0, 0.0],
+            }
+        )
+        result = summarize_statistical_tests(events, n_resamples=200, seed=1)
+        assert "rule_based" in result["additional_comparisons"]
+        assert "no_recovery" in result["additional_comparisons"]
+        for baseline in ("rule_based", "no_recovery"):
+            comparison = result["additional_comparisons"][baseline]
+            assert comparison["mcnemar"]["policy_b"] == baseline
+            assert comparison["bootstrap_ci"]["policy_b"] == baseline
+        # deployed recovered 3/5, no_recovery recovers 0/5 by construction --
+        # every deployed recovery is a discordant pair in the agent's favor.
+        no_recovery_mcnemar = result["additional_comparisons"]["no_recovery"]["mcnemar"]
+        assert no_recovery_mcnemar["only_a_recovered"] == 3
+        assert no_recovery_mcnemar["only_b_recovered"] == 0

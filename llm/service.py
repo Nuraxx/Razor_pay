@@ -42,11 +42,14 @@ from llm.prompts import (
     OUTREACH_MICROCOPY_SYSTEM_PROMPT,
     PROMISE_TO_PAY_PROMPT_VERSION,
     PROMISE_TO_PAY_SYSTEM_PROMPT,
+    VOICE_SCRIPT_PROMPT_VERSION,
+    VOICE_SCRIPT_SYSTEM_PROMPT,
     batch_explanation_user_prompt,
     outreach_microcopy_user_prompt,
     promise_to_pay_user_prompt,
+    voice_script_user_prompt,
 )
-from llm.schemas import BatchExplanationOutput, LLMResult, OutreachMicrocopyOutput, PromiseToPayOutput
+from llm.schemas import BatchExplanationOutput, LLMResult, OutreachMicrocopyOutput, PromiseToPayOutput, VoiceScriptOutput
 
 # Per-event hidden synthetic-benchmark fields that must never reach the LLM
 # layer (brief section 7). The two per-event job functions below never
@@ -235,6 +238,57 @@ def generate_batch_explanation_and_log(
 ) -> tuple[LLMResult, LLMInvocation]:
     result = generate_batch_explanation(report_summary=report_summary, client=client)
     return result, _persist(db, event_id=None, batch_id=batch_id, result=result)
+
+
+# ---------------------------------------------------------------------------
+# Job 4 (optional, Track-03): voice recovery script generation
+# ---------------------------------------------------------------------------
+
+_FALLBACK_VOICE_SCRIPT = {
+    ("en", True): "Hello. Your recent payment did not go through. We will automatically retry it soon. Thank you.",
+    ("en", False): "Hello. Your recent payment did not go through. Please check your payment method. Thank you.",
+    ("hi", True): "namaste. aapka haal hi ka payment poora nahi ho paaya. hum jald hi dobara koshish karenge. dhanyavaad.",
+    ("hi", False): "namaste. aapka haal hi ka payment poora nahi ho paaya. kripya apna payment tarika check karein. dhanyavaad.",
+    ("hinglish", True): "Hello. Aapka payment complete nahi hua. Hum jald hi dobara try karenge. Thank you.",
+    ("hinglish", False): "Hello. Aapka payment complete nahi hua. Kripya apna payment method check kar lijiye. Thank you.",
+}
+
+
+def generate_voice_script(
+    *, failure_bucket: str, customer_segment: str, language: str,
+    will_retry: bool, retry_window_description: str | None, amount_rupees: float,
+    client: LLMClient | None = None,
+) -> LLMResult:
+    """Job 4, optional (pure -- no DB). Same context shape as Job 1 -- the
+    policy layer's already-final decision fields are passed in as plain data,
+    exactly like generate_outreach_microcopy."""
+    client = client or get_llm_client()
+    system_prompt = VOICE_SCRIPT_SYSTEM_PROMPT
+    user_prompt = voice_script_user_prompt(
+        failure_bucket=failure_bucket, customer_segment=customer_segment, language=language,
+        will_retry=will_retry, retry_window_description=retry_window_description, amount_rupees=amount_rupees,
+    )
+    fallback_text = _FALLBACK_VOICE_SCRIPT.get((language, will_retry), _FALLBACK_VOICE_SCRIPT[("en", will_retry)])
+    fallback = VoiceScriptOutput(
+        script_text=fallback_text, estimated_duration_seconds=round(len(fallback_text) / 15.0, 1),
+        requires_callback_offer=not will_retry, language=language if language in ("en", "hi", "hinglish") else "en",
+        failure_bucket=failure_bucket, customer_segment=customer_segment,
+    )
+    return _invoke(
+        client=client, system_prompt=system_prompt, user_prompt=user_prompt, schema_cls=VoiceScriptOutput,
+        task_name="voice_script_generation", prompt_version=VOICE_SCRIPT_PROMPT_VERSION, fallback_result=fallback,
+    )
+
+
+def generate_voice_script_and_log(
+    db: Session, *, event_id: int, failure_bucket: str, customer_segment: str, language: str,
+    will_retry: bool, retry_window_description: str | None, amount_rupees: float, client: LLMClient | None = None,
+) -> tuple[LLMResult, LLMInvocation]:
+    result = generate_voice_script(
+        failure_bucket=failure_bucket, customer_segment=customer_segment, language=language,
+        will_retry=will_retry, retry_window_description=retry_window_description, amount_rupees=amount_rupees, client=client,
+    )
+    return result, _persist(db, event_id=event_id, batch_id=None, result=result)
 
 
 # ---------------------------------------------------------------------------

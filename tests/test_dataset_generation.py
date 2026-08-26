@@ -139,6 +139,34 @@ def test_distractor_features_present_and_not_used_as_split_key(dataset):
         assert col in dataset["train"].columns
 
 
+def test_distractor_features_are_statistically_independent_of_archetype(dataset):
+    """Evaluation-compliance audit: the specification's whole reason for
+    including distractor features is to check that a trained model's
+    feature importances correctly ignore them (Section 10, item 4) -- that
+    property can only hold if the DATA itself never gives a distractor a
+    real, exploitable association with the hidden archetype (which would
+    make it a backdoor archetype proxy) or with the recovery label. This
+    tests the GENERATION methodology directly (a chi-square independence
+    test on the actual generated data), which is what's fixable if wrong --
+    a small-sample trained model's own feature-importance ranking is a
+    separate, expected small-n phenomenon this test does not (and cannot)
+    control for."""
+    from scipy.stats import chi2_contingency
+
+    events = dataset["failure_events"].merge(dataset["subscriptions"][["subscription_id", "archetype"]], on="subscription_id")
+    labels = dataset["recovery_outcomes"].set_index("event_id")["recovered_within_14d"]
+    events = events.merge(labels.rename("recovered_within_14d"), on="event_id")
+
+    for col in ("app_version", "device_build", "ui_theme"):
+        contingency = pd.crosstab(events[col], events["archetype"])
+        _, p_value, _, _ = chi2_contingency(contingency)
+        assert p_value > 0.01, f"{col} shows a statistically significant association with archetype (p={p_value:.4f}) -- possible backdoor archetype leak"
+
+        contingency_label = pd.crosstab(events[col], events["recovered_within_14d"])
+        _, p_value_label, _, _ = chi2_contingency(contingency_label)
+        assert p_value_label > 0.01, f"{col} shows a statistically significant association with the recovery label (p={p_value_label:.4f}) -- distractor should have no causal role"
+
+
 def test_recovered_amount_never_exceeds_transaction_amount(dataset):
     joined = dataset["recovery_outcomes"].merge(dataset["failure_events"][["event_id", "amount"]], on="event_id")
     assert (joined["final_amount_recovered"] <= joined["amount"]).all()

@@ -23,8 +23,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-TaskName = Literal["outreach_microcopy", "promise_to_pay_parse", "batch_explanation"]
-Provider = Literal["mock", "anthropic", "gemini"]
+TaskName = Literal["outreach_microcopy", "promise_to_pay_parse", "batch_explanation", "voice_script_generation"]
+Provider = Literal["mock", "anthropic", "gemini", "ollama"]
 
 ALLOWED_LANGUAGES = ("en", "hi", "hinglish")
 ALLOWED_CHANNELS = ("credit_card", "debit_card", "upi_autopay", "netbanking", "unspecified")
@@ -75,6 +75,23 @@ class BatchExplanationOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     explanation_text: str = Field(..., min_length=1, max_length=3000)
+
+
+class VoiceScriptOutput(BaseModel):
+    """Track-03, optional 4th job -- a spoken-register recovery script,
+    distinct from OutreachMicrocopyOutput's SMS/WhatsApp text (spoken
+    delivery needs pacing/duration/callback-offer fields a text message
+    doesn't -- see llm/__init__.py for why this is a separate job rather than
+    a `channel` parameter on Job 1)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    script_text: str = Field(..., min_length=1, max_length=1200)
+    estimated_duration_seconds: float = Field(..., ge=0.0, le=180.0)
+    requires_callback_offer: bool
+    language: Literal["en", "hi", "hinglish"]
+    failure_bucket: str = Field(..., min_length=1)
+    customer_segment: str = Field(..., min_length=1)
 
 
 class LLMResult(BaseModel):

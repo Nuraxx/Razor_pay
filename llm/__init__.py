@@ -1,8 +1,9 @@
 """
 Day-11 LLM-assisted communication layer.
 
-Exactly three LLM jobs (project specification, verbatim terminology
-preserved throughout this package -- see README "Day 11"):
+Three REQUIRED LLM jobs (project specification, verbatim terminology
+preserved throughout this package -- see README "Day 11"), plus one
+OPTIONAL Track-03 job:
 
   1. Outreach microcopy generation: per (failure bucket x customer segment x
      language preference), including a Hinglish variant as a PROMPT
@@ -11,11 +12,15 @@ preserved throughout this package -- see README "Day 11"):
      {date, confidence, channel} -- see llm/service.py::parse_promise_to_pay.
   3. Batch-level plain-English explanation for the final report --
      see llm/service.py::generate_batch_explanation.
+  4. (Optional, Track-03) Voice recovery script generation: a spoken-register
+     script for recovery/voice.py::VoiceRecoveryProvider -- see
+     llm/service.py::generate_voice_script.
 
-These are the ONLY three LLM jobs in this project. The LLM never
-classifies failures, never selects retry timing, never makes compliance
-decisions, and never overrides policy -- see policy/decision_engine_v4.py
-(Day 10) for where those deterministic decisions are actually made. The
-LLM is strictly downstream of a policy decision that has already been
-made without it.
+The LLM never classifies failures, never selects retry timing, never makes
+compliance decisions, never decides escalation level, and never overrides
+policy -- see policy/decision_engine_v4.py (Day 10) and
+policy/revenue_recovery_policy.py (Track-03) for where those deterministic
+decisions are actually made. The LLM is strictly downstream of a decision
+that has already been made without it, for every job including the
+optional 4th.
 """
