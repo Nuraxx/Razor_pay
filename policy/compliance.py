@@ -34,6 +34,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from policy.contact_hours import ContactHoursConfig, default_contact_hours_config, is_within_contact_hours
 from policy.decision_engine import NO_ACTION
 from policy.guardrails import MAX_CANDIDATE_HORIZON_DAYS, MAX_RETRY_ATTEMPTS, is_classification_allowed
 
@@ -106,11 +107,24 @@ def _candidate_time_is_valid(candidate_datetime: datetime, failure_timestamp: da
     return True, None
 
 
-def evaluate_compliance(context: ComplianceContext) -> ComplianceResult:
+def evaluate_compliance(context: ComplianceContext, contact_hours_config: ContactHoursConfig | None = None) -> ComplianceResult:
     """Evaluates every rule in brief section 2's minimum list. Payment and
     communication are gated independently (brief section 3) -- a rule that
     blocks one does not automatically block the other unless the rule
-    itself is about both (required_fields_present, duplicate checks)."""
+    itself is about both (required_fields_present, duplicate checks).
+
+    `contact_hours_config` defaults to app/config.py::settings (via
+    policy/contact_hours.py::default_contact_hours_config) when omitted --
+    injectable here purely for deterministic testing, same pattern as
+    `model` / `llm_client` elsewhere in this codebase. Checks
+    `context.selected_candidate_datetime` (the SCHEDULED action's own time),
+    never the current process clock. Applied to the COMMUNICATION gate only
+    -- "contact hours" (TRAI's own term for its commercial-communication
+    window) governs when it is acceptable to reach out to a customer
+    (SMS/WhatsApp/call); a backend payment-retry API call does not itself
+    contact anyone and is not scoped by that concept, so the payment gate is
+    intentionally left unchanged."""
+    hours_config = contact_hours_config or default_contact_hours_config()
 
     # customer_cancelled is treated as an automatic opt-out signal -- this
     # is DERIVED from the project's own existing classification vocabulary
@@ -142,6 +156,11 @@ def evaluate_compliance(context: ComplianceContext) -> ComplianceResult:
             payment_allowed, payment_reason = True, "payment_action_allowed: all compliance checks passed"
 
     # --- Communication-action gate (independent of the above) -----------
+    comm_within_hours, comm_hours_reason = (
+        is_within_contact_hours(context.selected_candidate_datetime, hours_config)
+        if context.selected_candidate_datetime is not None
+        else (True, "no_candidate_datetime_to_check")
+    )
     if not context.required_fields_present:
         comm_allowed, comm_reason = False, "required_fields_missing"
     elif context.communication_already_sent:
@@ -150,6 +169,8 @@ def evaluate_compliance(context: ComplianceContext) -> ComplianceResult:
         comm_allowed, comm_reason = False, "customer_opted_out_or_cancelled: outreach blocked"
     elif not context.consent_for_communication:
         comm_allowed, comm_reason = False, "consent_for_communication_missing"
+    elif not comm_within_hours:
+        comm_allowed, comm_reason = False, comm_hours_reason
     else:
         comm_allowed, comm_reason = True, "communication_action_allowed: all compliance checks passed"
 

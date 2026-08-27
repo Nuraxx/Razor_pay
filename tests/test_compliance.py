@@ -8,6 +8,7 @@ is covered by tests/test_orchestrator.py's failure matrix.
 from datetime import datetime, timedelta
 
 from policy.compliance import COMPLIANCE_RULE_VERSION, ComplianceContext, evaluate_compliance
+from policy.contact_hours import ContactHoursConfig
 from policy.decision_engine import NO_ACTION
 from policy.guardrails import MAX_CANDIDATE_HORIZON_DAYS, MAX_RETRY_ATTEMPTS
 
@@ -114,6 +115,56 @@ class TestCommunicationActionGate:
         result = evaluate_compliance(_valid_context(required_fields_present=False))
         assert result.payment_action_allowed is False
         assert result.communication_action_allowed is False
+
+
+class TestContactHoursGate:
+    """Final pre-submission correction: proves the contact-hours gate
+    (policy/contact_hours.py) is actually wired into evaluate_compliance's
+    communication gate -- the README claimed this gate existed before it
+    was implemented. Uses an injected `contact_hours_config` for fully
+    deterministic tests (never depends on real-world "now")."""
+
+    IST_9_TO_21 = ContactHoursConfig(enabled=True, timezone_name="Asia/Kolkata", start=datetime(2000, 1, 1, 9, 0).time(), end=datetime(2000, 1, 1, 21, 0).time())
+
+    def test_candidate_outside_contact_hours_blocks_communication_only(self):
+        # 2026-02-25 18:00 UTC = 23:30 IST -- outside [09:00, 21:00) IST.
+        outside_hours_dt = datetime(2026, 2, 25, 18, 0, 0)
+        result = evaluate_compliance(_valid_context(selected_candidate_datetime=outside_hours_dt), self.IST_9_TO_21)
+        assert result.communication_action_allowed is False
+        assert "outside_contact_hours" in result.communication_reason
+        # payment (backend retry) is NOT scoped by contact hours -- see
+        # policy/compliance.py's docstring for why.
+        assert result.payment_action_allowed is True
+
+    def test_candidate_inside_contact_hours_allows_communication(self):
+        # 2026-02-25 10:00 UTC = 15:30 IST -- inside the window.
+        inside_hours_dt = datetime(2026, 2, 25, 10, 0, 0)
+        result = evaluate_compliance(_valid_context(selected_candidate_datetime=inside_hours_dt), self.IST_9_TO_21)
+        assert result.communication_action_allowed is True
+
+    def test_no_candidate_datetime_does_not_block_on_contact_hours(self):
+        # NO_ACTION path: nothing scheduled, nothing to check -- must not be
+        # blocked by a contact-hours reason (it's already blocked for the
+        # real reason, policy_selected_no_action / analogous).
+        result = evaluate_compliance(
+            _valid_context(selected_candidate_type=NO_ACTION, selected_candidate_datetime=None), self.IST_9_TO_21,
+        )
+        assert "contact_hours" not in result.communication_reason
+
+    def test_disabled_gate_never_blocks_on_contact_hours(self):
+        outside_hours_dt = datetime(2026, 2, 25, 18, 0, 0)
+        disabled = ContactHoursConfig(enabled=False, timezone_name="Asia/Kolkata", start=self.IST_9_TO_21.start, end=self.IST_9_TO_21.end)
+        result = evaluate_compliance(_valid_context(selected_candidate_datetime=outside_hours_dt), disabled)
+        assert result.communication_action_allowed is True
+
+    def test_default_contact_hours_config_is_used_when_none_injected(self):
+        # No config passed -- must fall back to app/config.py::settings
+        # (policy/contact_hours.py::default_contact_hours_config), not raise
+        # and not silently skip the check.
+        outside_hours_dt = datetime(2026, 2, 25, 18, 0, 0)
+        result = evaluate_compliance(_valid_context(selected_candidate_datetime=outside_hours_dt))
+        assert result.communication_action_allowed is False
+        assert "outside_contact_hours" in result.communication_reason
 
 
 class TestResultShapeAndVersioning:

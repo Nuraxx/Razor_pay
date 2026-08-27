@@ -19,6 +19,7 @@ from policy.compliance_v2 import (
     GeneralizedComplianceContext,
     evaluate_compliance_v2,
 )
+from policy.contact_hours import ContactHoursConfig
 from policy.decision_engine import NO_ACTION
 from policy.guardrails import MAX_CANDIDATE_HORIZON_DAYS, MAX_RETRY_ATTEMPTS
 
@@ -166,6 +167,16 @@ class TestNewDomainGates:
         result = evaluate_compliance_v2(_domain_context(communication_already_sent=True))
         assert result.payment_verdict == "ALLOWED"
         assert result.communication_verdict == "BLOCKED"
+
+    def test_candidate_outside_contact_hours_blocks_communication_only(self):
+        # Final pre-submission correction: proves the contact-hours gate is
+        # wired into the new-domain path too, not just the legacy delegation.
+        ist_9_to_21 = ContactHoursConfig(enabled=True, timezone_name="Asia/Kolkata", start=datetime(2000, 1, 1, 9, 0).time(), end=datetime(2000, 1, 1, 21, 0).time())
+        outside_hours_dt = datetime(2026, 2, 25, 18, 0, 0)  # 23:30 IST
+        result = evaluate_compliance_v2(_domain_context(selected_candidate_datetime=outside_hours_dt), ist_9_to_21)
+        assert result.communication_verdict == "BLOCKED"
+        assert "outside_contact_hours" in result.communication_reason
+        assert result.payment_verdict == "ALLOWED"
 
 
 class TestHumanReviewVerdict:

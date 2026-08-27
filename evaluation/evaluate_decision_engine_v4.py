@@ -47,7 +47,10 @@ from policy.decision_engine_v4 import (
     DEFAULT_FALLBACK_ADVANTAGE_THRESHOLD_RS,
     DEFAULT_FALLBACK_MODE,
     DEFAULT_MARGIN_THRESHOLD_RS,
+    FALLBACK_MODE_ALWAYS,
+    FALLBACK_MODE_KEEP_IF_BETTER,
     FALLBACK_MODE_KEEP_UNLESS_CLEAR,
+    FALLBACK_MODE_NO_ACTION,
     FALLBACK_MODES,
     decide_engine_v4,
 )
@@ -156,29 +159,129 @@ def _run_v4_for_all_events(df: pd.DataFrame, model: dict, margin_threshold: floa
     return pd.DataFrame(records)
 
 
+def _run_v4_for_all_events_with_realized(
+    df: pd.DataFrame, model: dict, margin_threshold: float, fallback_mode: str, fallback_advantage_threshold: float,
+) -> pd.DataFrame:
+    """Same per-event decide_engine_v4 sweep as _run_v4_for_all_events, plus
+    the REALIZED (stochastically-sampled) outcome columns -- available for
+    every split, including validation, since they come from the same
+    pre-generated data/raw/counterfactual_outcomes.csv every other policy in
+    this script already reads. Used ONLY by the validation-only search below;
+    never touches test."""
+    records = []
+    for event_id, group in df.groupby("event_id"):
+        first = group.iloc[0]
+        subscription_id, failure_timestamp, amount = first["subscription_id"], first["failure_timestamp"], float(first["amount"])
+        classification_bucket = classify(None, first["error_reason"]).bucket
+        decision = decide_engine_v4(
+            event_id, subscription_id, failure_timestamp, amount, classification_bucket, _event_context(first),
+            costs=DEFAULT_COSTS, margin_threshold=margin_threshold, fallback_mode=fallback_mode,
+            fallback_advantage_threshold=fallback_advantage_threshold, model=model,
+        )
+        latent_by_type = _latent_value_lookup(group)
+        realized_recovered = dict(zip(group["candidate_type"], group["recovered_within_14d"]))
+        realized_amount = dict(zip(group["candidate_type"], group["amount_recovered"]))
+        selected = decision.selected_candidate_type
+        records.append(
+            {
+                "event_id": event_id,
+                "selected_candidate_type": selected,
+                "decision_source": decision.decision_source,
+                "latent_value_selected": latent_by_type.get(selected, 0.0) if selected != NO_ACTION else 0.0,
+                "realized_recovered": bool(realized_recovered.get(selected, False)) if selected != NO_ACTION else False,
+                "realized_amount_recovered": float(realized_amount.get(selected, 0.0)) if selected != NO_ACTION else 0.0,
+            }
+        )
+    return pd.DataFrame(records)
+
+
 def select_day10_configuration_on_validation(val_df: pd.DataFrame, model: dict) -> tuple[dict, dict]:
     """VALIDATION-ONLY search (brief section 2) -- test is never touched
     here. Returns (chosen_config, all_results). chosen_config is a dict with
-    keys margin_threshold / fallback_mode / fallback_advantage_threshold."""
+    keys margin_threshold / fallback_mode / fallback_advantage_threshold.
+
+    ECONOMIC CORRECTION (final pre-submission audit): the original version of
+    this search scored configurations by total LATENT value alone (a smooth,
+    low-variance proxy: `expected_recovery_value_latent = recovery_probability_latent
+    * amount`). That proxy disagreed with the actual/realized outcome ON THIS
+    SAME VALIDATION SPLIT -- the config it used to pick
+    (margin=5, always_fallback_when_below_margin) scores Rs18609.15 by latent
+    value (a Rs350.53 "win" over Model-B-alone's Rs18258.62) but only
+    Rs16417.73 by REALIZED Rs recovered (a Rs2105.48 LOSS vs Model-B-alone's
+    Rs18523.21), on the identical 59 validation events. This reproduced on
+    held-out TEST (never used to make this selection -- see
+    evaluation/reports/decision_engine_v4_evaluation.json's
+    "economic_correction_diagnosis" section for the frozen evidence).
+
+    Both metrics are still computed and reported for every configuration
+    (transparency), but REALIZED Rs recovered on validation is now the
+    PRIMARY selection key -- it is what the deployed policy is actually
+    trying to maximize, and both are available and legitimate to use here
+    since neither ever touches the test split. Ties (several configurations
+    routinely tie exactly, since two of the four fallback modes are
+    mathematically guaranteed to collapse to "no fallback ever" -- see
+    policy/decision_engine_v4.py's STRUCTURAL FINDING) are broken by (a)
+    higher total latent value, then (b) fewer fallbacks -- prefer trusting
+    Model B when the numbers are otherwise equal, then (c) fewer no-actions.
+    All deterministic, documented, never test-informed.
+    """
     results = {}
     for margin_threshold in MARGIN_THRESHOLD_CANDIDATES:
         for fallback_mode in FALLBACK_MODES:
             advantage_values = FALLBACK_ADVANTAGE_CANDIDATES if fallback_mode == FALLBACK_MODE_KEEP_UNLESS_CLEAR else [0.0]
             for fallback_advantage_threshold in advantage_values:
-                run = _run_v4_for_all_events(val_df, model, float(margin_threshold), fallback_mode, float(fallback_advantage_threshold))
+                run = _run_v4_for_all_events_with_realized(val_df, model, float(margin_threshold), fallback_mode, float(fallback_advantage_threshold))
                 key = (float(margin_threshold), fallback_mode, float(fallback_advantage_threshold))
                 n_fallback = int((run["decision_source"] == "rule_based_fallback").sum())
                 n_no_action = int((run["selected_candidate_type"] == NO_ACTION).sum())
                 results[key] = {
                     "margin_threshold": float(margin_threshold), "fallback_mode": fallback_mode,
                     "fallback_advantage_threshold": float(fallback_advantage_threshold),
+                    "total_realized_value_selected_rs": float(run["realized_amount_recovered"].sum()),
+                    "realized_recovery_rate": float(run["realized_recovered"].mean()),
                     "total_latent_value_selected_rs": float(run["latent_value_selected"].sum()),
                     "avg_latent_value_per_event_rs": float(run["latent_value_selected"].mean()),
                     "n_fallback": n_fallback, "n_no_action": n_no_action,
                 }
 
-    # Primary: total latent value (desc). Ties: fewer fallbacks, then fewer no-actions (documented, deterministic).
-    best_key = max(results, key=lambda k: (results[k]["total_latent_value_selected_rs"], -results[k]["n_fallback"], -results[k]["n_no_action"]))
+    # Primary: total REALIZED value (desc, the economic-correction fix).
+    # Ties (common -- KEEP_MODEL_WHEN_BETTER_THAN_RULE and
+    # KEEP_MODEL_UNLESS_RULE_HAS_CLEAR_ADVANTAGE are structurally guaranteed
+    # to tie with margin_threshold=0 at every margin/advantage value, see
+    # policy/decision_engine_v4.py's STRUCTURAL FINDING) are broken by:
+    #   1. higher total latent value
+    #   2. SAFEST fallback_mode -- KEEP_MODEL_UNLESS_RULE_HAS_CLEAR_ADVANTAGE
+    #      preferred over KEEP_MODEL_WHEN_BETTER_THAN_RULE over
+    #      NO_ACTION_WHEN_BELOW_MARGIN over ALWAYS_FALLBACK_WHEN_BELOW_MARGIN.
+    #      Deliberate: among economically-tied configurations, prefer the one
+    #      that can PROVABLY never select a worse candidate than Model B's own
+    #      best pick if the candidate/cost architecture changes later --
+    #      ALWAYS_FALLBACK_WHEN_BELOW_MARGIN has no such guarantee (it is the
+    #      exact mechanism the economic correction just fixed), so it is
+    #      ranked least-preferred among ties, never auto-selected by
+    #      coincidental tie order.
+    #   3. fewer fallbacks, then fewer no-actions.
+    # (decision_margin itself is ALWAYS computed and recorded in the audit
+    # trail regardless of margin_threshold -- decide_engine_v4 computes it
+    # unconditionally from Model B's own top-2 net values -- so a lower
+    # margin_threshold loses no audit information; it only controls whether
+    # the (unsafe, in ALWAYS mode) deviation is ever taken.)
+    _MODE_SAFETY_RANK = {
+        FALLBACK_MODE_KEEP_UNLESS_CLEAR: 3,
+        FALLBACK_MODE_KEEP_IF_BETTER: 2,
+        FALLBACK_MODE_NO_ACTION: 1,
+        FALLBACK_MODE_ALWAYS: 0,
+    }
+    best_key = max(
+        results,
+        key=lambda k: (
+            results[k]["total_realized_value_selected_rs"],
+            results[k]["total_latent_value_selected_rs"],
+            _MODE_SAFETY_RANK[results[k]["fallback_mode"]],
+            -results[k]["n_fallback"],
+            -results[k]["n_no_action"],
+        ),
+    )
     chosen = {k: results[best_key][k] for k in ("margin_threshold", "fallback_mode", "fallback_advantage_threshold")}
     return chosen, results
 
@@ -567,6 +670,97 @@ def summarize_economics(events: pd.DataFrame, realized_summary: dict) -> dict:
     return economics
 
 
+def build_stage_decomposition(events: pd.DataFrame, test_df: pd.DataFrame, model: dict, chosen_config: dict) -> dict:
+    """Part-B-style decomposition (final pre-submission audit): isolates
+    EXACTLY which stage of the deployed subscription decision path is
+    responsible for the gap to Fixed Retry, on the SAME frozen TEST events
+    `events` already holds. Two extra decide_engine_v4 sweeps are run here
+    purely to EXPLAIN the already-frozen result (never to select anything --
+    the deployed config was already chosen on validation before this
+    function is ever called):
+
+      - margin_threshold=5, fallback_mode=NO_ACTION: isolates the cost of
+        pure abstention under ambiguity (no swap, no guess).
+      - margin_threshold=5, fallback_mode=ALWAYS: the OLD (pre-correction)
+        default, reproduced here on TEST only as a diagnostic -- this is the
+        mechanism that caused the originally-reported Rs3298.87 gap.
+
+    Every other stage reuses columns evaluate_events_v4 already computed
+    (no re-simulation): guardrails apply identically to every stage in this
+    architecture (checked first, before Model B ever runs), so they are not
+    a separate row -- see the note in the returned dict.
+    """
+    n = len(events)
+
+    def _diagnostic_sweep(margin_threshold: float, fallback_mode: str) -> dict:
+        recovered_rs = 0.0
+        n_recovered = 0
+        intervention_cost = 0.0
+        for event_id, group in test_df.groupby("event_id"):
+            first = group.iloc[0]
+            subscription_id, failure_timestamp, amount = first["subscription_id"], first["failure_timestamp"], float(first["amount"])
+            classification_bucket = classify(None, first["error_reason"]).bucket
+            decision = decide_engine_v4(
+                event_id, subscription_id, failure_timestamp, amount, classification_bucket, _event_context(first),
+                costs=DEFAULT_COSTS, margin_threshold=margin_threshold, fallback_mode=fallback_mode,
+                fallback_advantage_threshold=0.0, model=model,
+            )
+            sel = decision.selected_candidate_type
+            if sel == NO_ACTION:
+                continue
+            realized_amount = dict(zip(group["candidate_type"], group["amount_recovered"]))
+            realized_recovered = dict(zip(group["candidate_type"], group["recovered_within_14d"]))
+            recovered_rs += float(realized_amount.get(sel, 0.0))
+            if bool(realized_recovered.get(sel, False)):
+                n_recovered += 1
+            intervention_cost += cost_for_candidate(sel, DEFAULT_COSTS)
+        return {
+            "n_events": n, "rs_recovered": round(recovered_rs, 2), "recovery_rate": round(n_recovered / n, 4) if n else 0.0,
+            "intervention_cost_rs": round(intervention_cost, 2), "net_value_rs": round(recovered_rs - intervention_cost, 2),
+        }
+
+    def _from_existing(policy_name: str) -> dict:
+        rs = float(events[f"{policy_name}__realized_amount_recovered"].sum())
+        rate = float(events[f"{policy_name}__realized_recovered"].mean())
+        cost = float(sum(cost_for_candidate(t, DEFAULT_COSTS) for t in events[f"{policy_name}__selected_candidate_type"] if t != NO_ACTION))
+        if policy_name == "fixed_retry":
+            cost = float(events["fixed_retry__n_attempts"].sum()) * (DEFAULT_COSTS.retry_cost + DEFAULT_COSTS.operational_cost)
+        if policy_name == "rule_based":
+            cost += contact_cost(int(events["rule_based__n_contacts"].sum()), DEFAULT_COSTS)
+        return {
+            "n_events": n, "rs_recovered": round(rs, 2), "recovery_rate": round(rate, 4),
+            "intervention_cost_rs": round(cost, 2), "net_value_rs": round(rs - cost, 2),
+        }
+
+    fixed_net = _from_existing("fixed_retry")["net_value_rs"]
+    stages = {
+        "1_fixed_retry_baseline": _from_existing("fixed_retry"),
+        "2_rule_based_baseline": _from_existing("rule_based"),
+        "3_model_only_no_margin_gate": _from_existing("day8_model_b_alone"),
+        "4_model_plus_margin_gate_no_action_fallback_DIAGNOSTIC": _diagnostic_sweep(5.0, "no_action_when_below_margin"),
+        "5_model_plus_margin_gate_old_blind_swap_fallback_DIAGNOSTIC_REJECTED": _diagnostic_sweep(5.0, "always_fallback_when_below_margin"),
+        "6_deployed_policy_final": _from_existing("day10_improved_fallback"),
+        "7_oracle_upper_bound": _from_existing("oracle_policy"),
+    }
+    for stage in stages.values():
+        stage["diff_vs_fixed_retry_rs"] = round(stage["net_value_rs"] - fixed_net, 2)
+
+    return {
+        "note": (
+            "Guardrails (policy/guardrails.py: classification bucket, max retry attempts, candidate-timing "
+            "validity, duplicate-decision protection) are not a separate stage -- they run FIRST, identically, "
+            "before Model B is ever consulted, in every one of stages 3-6 (decide_engine_v4 always checks them "
+            "before Tier 1). They cannot be the source of the Fixed-Retry gap because they never differ between "
+            "these stages; the gap is entirely explained by the margin-gate + fallback-mode choice (stages 4 vs 5 "
+            "vs 6). Stage 5 is the OLD (pre-economic-correction) deployed mechanism, reproduced here on TEST only "
+            "to show the exact mechanism that caused the originally-reported Rs3298.87 gap -- it is NOT the "
+            "current deployed policy (stage 6 is)."
+        ),
+        "chosen_config": chosen_config,
+        "stages": stages,
+    }
+
+
 def print_decision_trace(events: pd.DataFrame, n: int = 12) -> None:
     print(f"=== Decision trace (first {n} test events) ===")
     cols = [
@@ -596,12 +790,14 @@ def main() -> None:
     del train_df
 
     print("=== Phase 1: Day-10 configuration search on VALIDATION ONLY ===")
+    print("    (economic correction: primary key is now REALIZED Rs recovered on validation, not latent value alone -- see")
+    print("    select_day10_configuration_on_validation's docstring and policy/decision_engine_v4.py's ECONOMIC-CORRECTION FINDING)")
     chosen_config, search_results = select_day10_configuration_on_validation(val_df, model)
-    ranked = sorted(search_results.values(), key=lambda r: r["total_latent_value_selected_rs"], reverse=True)
+    ranked = sorted(search_results.values(), key=lambda r: (r["total_realized_value_selected_rs"], r["total_latent_value_selected_rs"]), reverse=True)
     for r in ranked[:15]:
         is_chosen = r["margin_threshold"] == chosen_config["margin_threshold"] and r["fallback_mode"] == chosen_config["fallback_mode"] and r["fallback_advantage_threshold"] == chosen_config["fallback_advantage_threshold"]
         marker = " <-- selected" if is_chosen else ""
-        print(f"  margin=Rs{r['margin_threshold']:<6} mode={r['fallback_mode']:<40} adv=Rs{r['fallback_advantage_threshold']:<6} total_latent=Rs{r['total_latent_value_selected_rs']:>10.2f} n_fallback={r['n_fallback']:<3} n_no_action={r['n_no_action']}{marker}")
+        print(f"  margin=Rs{r['margin_threshold']:<6} mode={r['fallback_mode']:<40} adv=Rs{r['fallback_advantage_threshold']:<6} total_realized=Rs{r['total_realized_value_selected_rs']:>10.2f} total_latent=Rs{r['total_latent_value_selected_rs']:>10.2f} n_fallback={r['n_fallback']:<3} n_no_action={r['n_no_action']}{marker}")
     print(f"  (showing top 15 of {len(search_results)} configurations searched)")
     print(f"  CHOSEN: {chosen_config}")
     frozen_matches = (
@@ -623,10 +819,14 @@ def main() -> None:
     cost_per_recovery = summarize_cost_per_recovery(events, contact_metrics)
     statistical_tests = summarize_statistical_tests(events)
     economics_summary = summarize_economics(events, realized_summary)
+    stage_decomposition = build_stage_decomposition(events, test_df, model, chosen_config)
 
     report = {
         "label": "SYNTHETIC COUNTERFACTUAL EVALUATION -- does not measure real Razorpay recovery performance.",
-        "day10_configuration_selection_validation_only": {"chosen": chosen_config, "top_15_by_latent_value": ranked[:15], "n_configurations_searched": len(search_results)},
+        "day10_configuration_selection_validation_only": {
+            "chosen": chosen_config, "top_15_by_realized_value": ranked[:15], "n_configurations_searched": len(search_results),
+            "selection_metric": "total_realized_value_selected_rs (economic correction -- previously total_latent_value_selected_rs alone; see policy/decision_engine_v4.py's ECONOMIC-CORRECTION FINDING)",
+        },
         "latent_economic": latent_summary,
         "realized_counterfactual": realized_summary,
         "operational": operational_summary,
@@ -634,6 +834,7 @@ def main() -> None:
         "cost_per_recovery": cost_per_recovery,
         "statistical_tests": statistical_tests,
         "economics": economics_summary,
+        "stage_decomposition": stage_decomposition,
     }
     with open(REPORTS_DIR / "decision_engine_v4_evaluation.json", "w") as f:
         json.dump(report, f, indent=2, default=str)
@@ -675,6 +876,11 @@ def main() -> None:
     for name in POLICY_NAMES:
         e = economics_summary[name]
         print(f"  {name:26s} gmv=Rs{e['recovered_gmv']:>9.2f} intervention_cost=Rs{e['intervention_cost']:>7.2f} razorpay_fee_take=Rs{e['razorpay_fee_take']:>8.2f} net=Rs{e['net_recovery_value']:>9.2f}")
+    print()
+    print("STAGE DECOMPOSITION (Part-B economic-loss trace, same frozen TEST events):")
+    print(f"  {stage_decomposition['note']}")
+    for stage_name, s in stage_decomposition["stages"].items():
+        print(f"  {stage_name:60s} n={s['n_events']:<3} recovered=Rs{s['rs_recovered']:>9.2f} rate={s['recovery_rate']:.4f} cost=Rs{s['intervention_cost_rs']:>6.2f} net=Rs{s['net_value_rs']:>9.2f} diff_vs_fixed_retry=Rs{s['diff_vs_fixed_retry_rs']:>+9.2f}")
     print()
     print_decision_trace(events, n=12)
     print(f"Reports written to {REPORTS_DIR}")

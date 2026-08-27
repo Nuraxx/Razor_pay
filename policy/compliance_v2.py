@@ -31,6 +31,7 @@ from datetime import datetime, timedelta
 from typing import Literal
 
 from policy.compliance import COMPLIANCE_RULE_VERSION, ComplianceContext, evaluate_compliance
+from policy.contact_hours import ContactHoursConfig, default_contact_hours_config, is_within_contact_hours
 from policy.decision_engine import NO_ACTION
 from policy.guardrails import MAX_CANDIDATE_HORIZON_DAYS, MAX_RETRY_ATTEMPTS
 
@@ -118,7 +119,7 @@ def _candidate_time_is_valid(candidate_datetime: datetime, occurred_at: datetime
     return True, None
 
 
-def _evaluate_new_domain(context: GeneralizedComplianceContext) -> GeneralizedComplianceResult:
+def _evaluate_new_domain(context: GeneralizedComplianceContext, hours_config: ContactHoursConfig) -> GeneralizedComplianceResult:
     # --- "payment" gate -- i.e. the primary recovery action for this domain ---
     if not context.required_fields_present:
         payment_verdict, payment_reason = "BLOCKED", "required_fields_missing"
@@ -142,6 +143,11 @@ def _evaluate_new_domain(context: GeneralizedComplianceContext) -> GeneralizedCo
     # --- communication gate (independent) --------------------------------
     is_cancelled = context.classification_bucket == "customer_cancelled"
     opted_out = context.customer_opted_out or is_cancelled
+    comm_within_hours, comm_hours_reason = (
+        is_within_contact_hours(context.selected_candidate_datetime, hours_config)
+        if context.selected_candidate_datetime is not None
+        else (True, "no_candidate_datetime_to_check")
+    )
 
     if not context.required_fields_present:
         comm_verdict, comm_reason = "BLOCKED", "required_fields_missing"
@@ -153,6 +159,8 @@ def _evaluate_new_domain(context: GeneralizedComplianceContext) -> GeneralizedCo
         comm_verdict, comm_reason = "HUMAN_REVIEW", context.human_review_reason or "flagged_for_human_review"
     elif not context.consent_for_communication:
         comm_verdict, comm_reason = "BLOCKED", "consent_for_communication_missing"
+    elif not comm_within_hours:
+        comm_verdict, comm_reason = "BLOCKED", comm_hours_reason
     else:
         comm_verdict, comm_reason = "ALLOWED", "communication_action_allowed: all compliance checks passed"
 
@@ -163,14 +171,20 @@ def _evaluate_new_domain(context: GeneralizedComplianceContext) -> GeneralizedCo
     )
 
 
-def evaluate_compliance_v2(context: GeneralizedComplianceContext) -> GeneralizedComplianceResult:
+def evaluate_compliance_v2(context: GeneralizedComplianceContext, contact_hours_config: ContactHoursConfig | None = None) -> GeneralizedComplianceResult:
     """Single generalized compliance entry point (brief: "extend the
     existing compliance gate to all new event types"). Routes payment_failed
     / subscription_payment_failed to the exact, unmodified `evaluate_compliance`
     -- never a reimplementation -- and every other event_type to the new
-    domain-rules path above, which additionally supports HUMAN_REVIEW."""
+    domain-rules path above, which additionally supports HUMAN_REVIEW.
+
+    `contact_hours_config` defaults to app/config.py::settings when omitted
+    (same injectable-for-testing pattern as evaluate_compliance) and is
+    forwarded to the legacy gate too, so payment_failed / subscription_payment_failed
+    events get the identical contact-hours behavior as every other domain."""
+    hours_config = contact_hours_config or default_contact_hours_config()
     if context.event_type in PAYMENT_FAILED_EVENT_TYPES:
-        legacy_result = evaluate_compliance(_to_legacy_context(context))
+        legacy_result = evaluate_compliance(_to_legacy_context(context), hours_config)
         return GeneralizedComplianceResult(
             payment_verdict="ALLOWED" if legacy_result.payment_action_allowed else "BLOCKED",
             payment_reason=legacy_result.payment_reason,
@@ -178,4 +192,4 @@ def evaluate_compliance_v2(context: GeneralizedComplianceContext) -> Generalized
             communication_reason=legacy_result.communication_reason,
             rule_version=legacy_result.rule_version,
         )
-    return _evaluate_new_domain(context)
+    return _evaluate_new_domain(context, hours_config)

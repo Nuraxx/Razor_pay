@@ -321,10 +321,33 @@ def test_config_fields_propagate_on_every_decision_type():
 
 
 def test_default_config_values_are_the_validation_selected_ones():
-    # pins the frozen defaults so an accidental edit is caught by CI, not silently shipped
-    assert DEFAULT_MARGIN_THRESHOLD_RS == 5.0
-    assert DEFAULT_FALLBACK_MODE == FALLBACK_MODE_ALWAYS
+    # Pins the frozen defaults so an accidental edit is caught by CI, not
+    # silently shipped. ECONOMIC CORRECTION (final pre-submission audit):
+    # these changed from (margin=5.0, ALWAYS) after re-running the
+    # validation-only search with REALIZED Rs recovered (not latent value
+    # alone) as the primary selection metric -- see
+    # policy/decision_engine_v4.py's ECONOMIC-CORRECTION FINDING and
+    # evaluation/reports/decision_engine_v4_evaluation.json.
+    assert DEFAULT_MARGIN_THRESHOLD_RS == 0.0
+    assert DEFAULT_FALLBACK_MODE == FALLBACK_MODE_KEEP_UNLESS_CLEAR
     assert DEFAULT_FALLBACK_ADVANTAGE_THRESHOLD_RS == 0.0
+
+
+def test_default_config_never_blindly_swaps_away_from_models_own_best_pick():
+    # Regression test for the exact economic bug this correction fixed:
+    # ALWAYS_FALLBACK_WHEN_BELOW_MARGIN would unconditionally discard Model
+    # B's own top pick whenever its top-2 margin was small, without ever
+    # checking whether the substitute was actually any good -- this cost
+    # Rs1280.95 on the held-out TEST set alone. The corrected default must
+    # never select a candidate the model itself did not choose as best.
+    model = _fake_model_dict([100.0, 99.0, 98.0, 97.0, 96.0])  # deliberately tiny margin
+    decision = decide_engine_v4(
+        70001, "sub_v4_no_blind_swap", FAILURE_TS, 1000.0, "retryable_soft", FAILURE_CONTEXT,
+        margin_threshold=DEFAULT_MARGIN_THRESHOLD_RS, fallback_mode=DEFAULT_FALLBACK_MODE,
+        fallback_advantage_threshold=DEFAULT_FALLBACK_ADVANTAGE_THRESHOLD_RS, model=model,
+    )
+    assert decision.decision_source == SOURCE_MODEL
+    assert decision.selected_candidate_type == CANDIDATE_TYPES[0]  # the highest-scored candidate in the fake model
 
 
 # ---------------------------------------------------------------------------
@@ -415,11 +438,19 @@ def test_configuration_search_uses_only_validation_data(latent_splits, real_mode
     assert "test_df" not in params and "test" not in params
 
 
-def test_configuration_search_selects_best_by_total_latent_value(latent_splits, real_model):
+def test_configuration_search_selects_best_by_total_realized_value(latent_splits, real_model):
+    # ECONOMIC CORRECTION: the primary selection key is now REALIZED Rs
+    # recovered on validation (what the search's docstring calls out as the
+    # fix), not total_latent_value_selected_rs alone -- see
+    # policy/decision_engine_v4.py's ECONOMIC-CORRECTION FINDING. Both
+    # metrics are still reported for every configuration; only realized is
+    # asserted to be optimal here, since latent and realized can legitimately
+    # disagree (that disagreement is exactly what this correction fixed).
     from evaluation.evaluate_decision_engine_v4 import select_day10_configuration_on_validation
 
     _train, val_df, _test_df = latent_splits
     chosen, results = select_day10_configuration_on_validation(val_df, real_model)
     chosen_key = next(k for k, r in results.items() if r["margin_threshold"] == chosen["margin_threshold"] and r["fallback_mode"] == chosen["fallback_mode"] and r["fallback_advantage_threshold"] == chosen["fallback_advantage_threshold"])
-    chosen_value = results[chosen_key]["total_latent_value_selected_rs"]
-    assert all(chosen_value >= r["total_latent_value_selected_rs"] for r in results.values())
+    chosen_value = results[chosen_key]["total_realized_value_selected_rs"]
+    assert all(chosen_value >= r["total_realized_value_selected_rs"] for r in results.values())
+    assert all("total_realized_value_selected_rs" in r and "total_latent_value_selected_rs" in r for r in results.values())

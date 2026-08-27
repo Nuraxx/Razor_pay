@@ -51,6 +51,17 @@ class Settings:
     ENABLE_PROMISE_SWEEP_SCHEDULER: bool = os.getenv("ENABLE_PROMISE_SWEEP_SCHEDULER", "true").lower() == "true"
     PROMISE_SWEEP_INTERVAL_SECONDS: int = int(os.getenv("PROMISE_SWEEP_INTERVAL_SECONDS", "300"))
 
+    # Final pre-submission correction: contact-hours gate (policy/contact_hours.py),
+    # wired into policy/compliance.py + policy/compliance_v2.py. Default window
+    # (09:00-21:00 Asia/Kolkata) follows TRAI's own commercial-communication
+    # window -- the only India-specific convention this project has any basis
+    # to reference (this is a project guardrail, not a claim of TRAI/DPDP/RBI
+    # regulatory compliance -- see policy/compliance.py's own disclaimer).
+    CONTACT_HOURS_ENABLED: bool = os.getenv("CONTACT_HOURS_ENABLED", "true").lower() == "true"
+    CONTACT_HOURS_TIMEZONE: str = os.getenv("CONTACT_HOURS_TIMEZONE", "Asia/Kolkata")
+    CONTACT_HOURS_START: str = os.getenv("CONTACT_HOURS_START", "09:00")
+    CONTACT_HOURS_END: str = os.getenv("CONTACT_HOURS_END", "21:00")
+
     def validate_webhook_secret_present(self) -> None:
         if not self.RAZORPAY_WEBHOOK_SECRET:
             raise RuntimeError(

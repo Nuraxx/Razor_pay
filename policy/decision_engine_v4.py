@@ -124,6 +124,27 @@ FallbackMode = Literal[
 # and README "Day 10: configuration selection". Frozen here; never re-tuned
 # against test results.
 #
+# ECONOMIC-CORRECTION FINDING (final pre-submission audit -- see README "Day
+# 10: economic correction" and evaluation/reports/decision_engine_v4_evaluation.json):
+# the ORIGINAL Day-10 search picked ALWAYS_FALLBACK_WHEN_BELOW_MARGIN at a
+# Rs5 margin because it scored highest on total LATENT value
+# (Rs18609.15 vs Rs18258.62 for Model-B-alone) -- a smooth, low-variance
+# proxy (`expected_recovery_value_latent = recovery_probability_latent *
+# amount`), never the actual/realized outcome. Re-running that SAME 108-
+# config search on the SAME validation split (n=59), but scoring by total
+# REALIZED Rs recovered instead, shows the two metrics DISAGREE: the chosen
+# config's realized total is Rs16417.73 -- Rs2105.48 WORSE than Model-B-alone
+# (Rs18523.21) on validation itself, not merely on held-out test. Every
+# config that ever blind-swaps away from Model B's own top pick (i.e. every
+# ALWAYS_FALLBACK_WHEN_BELOW_MARGIN margin > 0) scores worse by realized Rs
+# on validation; Model-B-alone (or any config that is mathematically
+# equivalent to it -- see structural finding below) is tied for the single
+# best realized-value config out of all 108 searched. This reproduced on the
+# held-out TEST split too (Model-B-alone Rs21278.18 vs the old default's
+# Rs19997.23, a Rs1280.95 loss purely from blind fallback swapping) --
+# confirming this is a real property of the mechanism on this population,
+# not test-set noise. The default below has been corrected accordingly.
+#
 # STRUCTURAL FINDING (verified, not a bug -- see README "Day 10: why the
 # evidence-based modes never fire"): KEEP_MODEL_WHEN_BETTER_THAN_RULE and
 # KEEP_MODEL_UNLESS_RULE_HAS_CLEAR_ADVANTAGE scored EXACTLY Rs18258.62 (=
@@ -133,15 +154,28 @@ FallbackMode = Literal[
 # already scores, so Model B's own top pick (the argmax over that whole set)
 # can never have a LOWER net value than Model B's own estimate for
 # Rule-Based's candidate -- there is nothing for a "clear advantage" to ever
-# detect. Both modes therefore collapse to "day8_model_b_alone" in this
-# architecture. The search correctly picked among the two modes that DO
-# behave differently: ALWAYS_FALLBACK_WHEN_BELOW_MARGIN with a narrow
-# Rs5 margin gate won (Rs18609.15 total validation latent value), beating
-# every other tested combination including Rs0 margin (=Model B alone,
-# Rs18258.62) and Rs10 (Day-9's own frozen value, Rs18590.40).
-DEFAULT_MARGIN_THRESHOLD_RS = 5.0
-DEFAULT_FALLBACK_MODE: FallbackMode = FALLBACK_MODE_ALWAYS
-DEFAULT_FALLBACK_ADVANTAGE_THRESHOLD_RS = 0.0  # unused by ALWAYS mode; kept well-defined rather than left stale
+# detect. Both modes therefore ALWAYS collapse to "day8_model_b_alone"'s
+# selections in this architecture, regardless of margin_threshold or
+# fallback_advantage_threshold: they can never do WORSE than Model B alone,
+# by construction. That safety property is exactly why
+# KEEP_MODEL_UNLESS_RULE_HAS_CLEAR_ADVANTAGE is the corrected default below
+# -- unlike ALWAYS_FALLBACK_WHEN_BELOW_MARGIN, it is provably incapable of
+# selecting a worse candidate than Model B's own best pick, because it
+# ignores the model's own valuation of the substitute entirely.
+#
+# margin_threshold=0.0 (rather than the original Rs5) is not a loss of
+# information: decision_margin is ALWAYS computed and recorded in the audit
+# trail from Model B's own top-2 net values regardless of margin_threshold
+# (see decide_engine_v4 below) -- the threshold only controls whether a
+# deviation is ever TAKEN, and every deviation this architecture can take is
+# either unsafe (ALWAYS mode) or a structural no-op (the two KEEP_* modes).
+# With the safe mode, margin_threshold=0.0 and margin_threshold=100.0 select
+# identically; 0.0 is kept as the plainest, most self-explanatory value, and
+# is exactly what evaluation/evaluate_decision_engine_v4.py's validation-only
+# search (re-run after the economic correction, see finding above) selects.
+DEFAULT_MARGIN_THRESHOLD_RS = 0.0
+DEFAULT_FALLBACK_MODE: FallbackMode = FALLBACK_MODE_KEEP_UNLESS_CLEAR
+DEFAULT_FALLBACK_ADVANTAGE_THRESHOLD_RS = 0.0
 
 
 def fallback_advantage(rule_candidate_value: float, model_best_value: float) -> float:

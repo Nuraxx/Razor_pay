@@ -285,6 +285,30 @@ def get_live_session():
     return SessionLocal()
 
 
+@st.cache_resource(show_spinner=False)
+def ensure_schema_initialized() -> bool:
+    """Fresh-clone correction: `streamlit run ui/app.py` on a brand-new
+    checkout (no FastAPI process ever started) used to crash every live-DB
+    page with `sqlite3.OperationalError: no such table: raw_events` --
+    schema creation only ever happened in app/main.py's FastAPI lifespan.
+    Calls the EXISTING app/db.py::init_db() (never a second schema
+    initializer) once per Streamlit process -- `st.cache_resource` makes
+    this idempotent across reruns/pages within one process; init_db()'s own
+    `Base.metadata.create_all()` is itself idempotent across processes
+    (CREATE TABLE IF NOT EXISTS semantics), so this is also safe to run
+    alongside a FastAPI process that already initialized the same file.
+    Returns True on success; on any failure, returns False rather than
+    raising -- callers degrade to the existing empty-state handling instead
+    of crashing the whole dashboard over a schema-creation problem."""
+    try:
+        from app.db import init_db
+
+        init_db()
+        return True
+    except Exception:  # noqa: BLE001 -- schema init must never crash the dashboard on import
+        return False
+
+
 def get_live_system_status() -> dict:
     """Best-effort, NEVER-raising snapshot of actual runtime state. Every
     field is either a real check performed this call or explicitly

@@ -492,6 +492,65 @@ def _seed_live_event(
     return event_id
 
 
+class TestFreshCloneDatabaseInitialization:
+    """Final pre-submission correction: `git clone` -> `pip install -r
+    requirements.txt` -> `streamlit run ui/app.py` (no FastAPI process ever
+    started) used to crash every live-DB page with
+    `sqlite3.OperationalError: no such table: raw_events` -- schema creation
+    only happened in app/main.py's FastAPI lifespan. Proves
+    ui/data.py::ensure_schema_initialized() (called first thing in
+    ui/app.py::main()) fixes this using the EXISTING app/db.py::init_db()
+    -- never a second schema initializer -- against a genuinely fresh SQLite
+    file with zero pre-created tables."""
+
+    def _point_db_at_fresh_file(self, tmp_path, monkeypatch):
+        import app.db as db_module
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        fresh_db_path = tmp_path / "brand_new_fresh_clone.db"
+        assert not fresh_db_path.exists()
+        fresh_engine = create_engine(f"sqlite:///{fresh_db_path}", connect_args={"check_same_thread": False})
+        monkeypatch.setattr(db_module, "engine", fresh_engine)
+        monkeypatch.setattr(db_module, "SessionLocal", sessionmaker(bind=fresh_engine))
+        data.ensure_schema_initialized.clear()  # a prior test's cached True/False must never leak in
+        return fresh_db_path
+
+    def test_query_on_a_fresh_database_raises_no_such_table_before_init(self, tmp_path, monkeypatch):
+        # Reproduces the reported bug first, unmodified -- proves this test
+        # would actually catch a regression, not just exercise a no-op.
+        self._point_db_at_fresh_file(tmp_path, monkeypatch)
+        with pytest.raises(Exception, match="no such table"):
+            data.get_live_kpis()
+
+    def test_ensure_schema_initialized_fixes_it(self, tmp_path, monkeypatch):
+        self._point_db_at_fresh_file(tmp_path, monkeypatch)
+        ok = data.ensure_schema_initialized()
+        assert ok is True
+        assert data.get_live_kpis() == {
+            "failed_payments": 0, "policy_decisions": 0, "retry_actions": 0, "no_action": 0, "received_not_orchestrated": 0,
+        }
+        assert data.get_live_recovery_queue_df().empty
+        assert data.get_live_raw_events_df().empty
+        assert data.get_live_communications_df().empty
+        status = data.get_live_system_status()
+        assert status["database_connected"] is True
+        assert status["database_error"] is None
+
+    def test_full_streamlit_startup_renders_every_page_on_a_fresh_empty_database(self, tmp_path, monkeypatch):
+        # The real regression test: drives the ACTUAL ui/app.py::main()
+        # entrypoint via AppTest -- not just the query layer -- against a
+        # fresh on-disk DB with zero pre-existing tables, for every page.
+        from streamlit.testing.v1 import AppTest
+
+        self._point_db_at_fresh_file(tmp_path, monkeypatch)
+        for page in ("Overview", "Recovery Queue", "Payment Events", "Analytics", "Communications", "Audit Log", "System / Demo", "Revenue at Risk"):
+            at = AppTest.from_file(APP_PATH, default_timeout=120).run()
+            assert not at.exception, f"default page render raised: {at.exception}"
+            at.sidebar.radio[0].set_value(page).run()
+            assert not at.exception, f"{page!r} raised on a fresh empty DB: {at.exception}"
+
+
 def test_get_live_raw_events_df_empty_db_returns_empty_dataframe(live_db_session_factory):
     df = data.get_live_raw_events_df()
     assert df.empty

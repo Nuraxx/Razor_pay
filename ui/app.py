@@ -1215,6 +1215,10 @@ def page_system_demo() -> None:
 def main() -> None:
     inject_css()
 
+    # Fresh-clone correction: must run before ANY live-DB query below --
+    # see ui/data.py::ensure_schema_initialized's docstring.
+    data.ensure_schema_initialized()
+
     status = data.get_live_system_status()
     top_bar(
         test_mode=status.get("environment") == "test",

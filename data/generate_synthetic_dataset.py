@@ -143,14 +143,25 @@ def next_payday_window_after(dt: datetime) -> datetime:
 
 
 def next_month_end_after(dt: datetime) -> datetime:
+    # Contact-hours correction (final pre-submission audit): hour was 18
+    # (UTC) -- this codebase's established convention is that naive
+    # datetimes flowing through policy/compliance represent UTC (see
+    # app/main.py's "_strip_tzinfo" note), so 18:00 UTC = 23:30 IST, always
+    # outside any reasonable contact-hours window (policy/contact_hours.py's
+    # default is 09:00-21:00 Asia/Kolkata) -- this candidate would have been
+    # BLOCKED by the communication gate on every single real event, forever,
+    # whenever policy selected it. Moved to 14:00 UTC = 19:30 IST: still the
+    # latest-in-the-day of this project's 5 candidate times (preserving the
+    # "evening reminder" intent relative to payday_window's 10:00 UTC /
+    # plus_3_days' 12:00 UTC), comfortably inside the contact-hours window.
     y, m = dt.year, dt.month
     last_day = calendar.monthrange(y, m)[1]
     month_end = datetime(y, m, last_day)
     if month_end.date() > dt.date():
-        return month_end.replace(hour=18, minute=0)
+        return month_end.replace(hour=14, minute=0)
     y2, m2 = _shift_month(y, m, 1)
     last_day2 = calendar.monthrange(y2, m2)[1]
-    return datetime(y2, m2, last_day2, 18, 0)
+    return datetime(y2, m2, last_day2, 14, 0)
 
 
 # ---------------------------------------------------------------------------
