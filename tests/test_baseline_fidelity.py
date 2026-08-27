@@ -434,6 +434,11 @@ class TestEvaluationIntegration:
 
         data = {f"{name}__selected_candidate_type": ["plus_1_day_morning", "plus_1_day_morning"] for name in POLICY_NAMES}
         data["fixed_retry__n_attempts"] = [1, 3]  # one event recovered at T+1, one ran the full campaign
+        # MULTI-ATTEMPT PERSISTENCE: day10_improved_fallback is costed the
+        # same n_attempts-based way as fixed_retry (see summarize_economics);
+        # values here are irrelevant to this test's own fixed_retry-only
+        # assertion, just present so the lookup doesn't KeyError.
+        data["day10_improved_fallback__n_attempts"] = [1, 1]
         data["rule_based__n_contacts"] = [2, 2]
         events = pd.DataFrame(data)
         realized_summary = {name: {"total_recovered_rs": 100.0} for name in POLICY_NAMES}

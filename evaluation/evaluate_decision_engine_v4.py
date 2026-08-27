@@ -52,6 +52,7 @@ from policy.decision_engine_v4 import (
     FALLBACK_MODE_KEEP_UNLESS_CLEAR,
     FALLBACK_MODE_NO_ACTION,
     FALLBACK_MODES,
+    build_retry_schedule_from_decision,
     decide_engine_v4,
 )
 from policy.economics import compute_recovery_economics
@@ -318,6 +319,15 @@ def evaluate_events_v4(test_df: pd.DataFrame, model: dict, day10_config: dict) -
         )
         oracle_sel = max((ct for ct, valid in valid_mask.items() if valid), key=lambda ct: latent_value[ct], default=NO_ACTION)
 
+        # MULTI-ATTEMPT PERSISTENCE (final pre-submission audit): the deployed
+        # policy's own Fixed-Retry-style schedule -- see
+        # policy/decision_engine_v4.py::build_retry_schedule_from_decision.
+        # Purely additive: day10_decision.selected_candidate_type (the
+        # single-attempt semantics every other field below still uses) is
+        # completely unchanged; day10_schedule is only consulted for the
+        # `day10_improved_fallback` row's realized outcome/cost below.
+        day10_schedule, _day10_schedule_dts = build_retry_schedule_from_decision(day10_decision)
+
         selections = {
             # Evaluation-compliance audit fix: the specification's Section 11
             # requires No Recovery ("nothing at all -- no retry, no contact")
@@ -343,6 +353,19 @@ def evaluate_events_v4(test_df: pd.DataFrame, model: dict, day10_config: dict) -
                 record[f"{policy_name}__realized_amount_recovered"] = sequence.amount_recovered
                 record[f"{policy_name}__n_attempts"] = sequence.n_attempts
                 record[f"{policy_name}__retry_schedule"] = fixed_schedule
+            elif policy_name == "day10_improved_fallback":
+                # MULTI-ATTEMPT PERSISTENCE: same sequence-scoring function as
+                # Fixed Retry (`score_fixed_retry_sequence` is a generic,
+                # policy-agnostic "stop at first recovered attempt" scorer,
+                # not Fixed-Retry-specific despite its name -- see that
+                # function's own docstring) applied to
+                # `day10_schedule` instead of Fixed Retry's fixed T+1/T+2/T+3
+                # calendar schedule.
+                sequence = score_fixed_retry_sequence(day10_schedule, realized_recovered, realized_amount)
+                record[f"{policy_name}__realized_recovered"] = sequence.recovered
+                record[f"{policy_name}__realized_amount_recovered"] = sequence.amount_recovered
+                record[f"{policy_name}__n_attempts"] = sequence.n_attempts
+                record[f"{policy_name}__retry_schedule"] = day10_schedule
             else:
                 record[f"{policy_name}__realized_recovered"] = bool(realized_recovered.get(selected, False)) if selected != NO_ACTION else False
                 record[f"{policy_name}__realized_amount_recovered"] = float(realized_amount.get(selected, 0.0)) if selected != NO_ACTION else 0.0
@@ -654,11 +677,20 @@ def summarize_economics(events: pd.DataFrame, realized_summary: dict) -> dict:
         SAME `intervention_cost` field (kept, not renamed -- see
         policy/economics.py's own terminology-mapping note) rather than a
         second, disconnected field.
+      day10_improved_fallback: MULTI-ATTEMPT PERSISTENCE (final pre-
+        submission audit) -- same `n_attempts`-based costing as fixed_retry,
+        since this policy can now also make up to
+        guardrails.MAX_RETRY_ATTEMPTS distinct attempts per event (see
+        policy/decision_engine_v4.py::build_retry_schedule_from_decision).
+        All 5 candidate types share one retry_cost + operational_cost (see
+        policy/costs.py), so this is exactly the same per-attempt cost model
+        Fixed Retry already uses -- an apples-to-apples comparison, not a
+        new cost model.
     """
     economics = {}
     for name in POLICY_NAMES:
-        if name == "fixed_retry":
-            total_intervention_cost = float(events["fixed_retry__n_attempts"].sum()) * (DEFAULT_COSTS.retry_cost + DEFAULT_COSTS.operational_cost)
+        if name in ("fixed_retry", "day10_improved_fallback"):
+            total_intervention_cost = float(events[f"{name}__n_attempts"].sum()) * (DEFAULT_COSTS.retry_cost + DEFAULT_COSTS.operational_cost)
         else:
             total_intervention_cost = float(
                 sum(cost_for_candidate(t, DEFAULT_COSTS) for t in events[f"{name}__selected_candidate_type"] if t != NO_ACTION)
@@ -723,8 +755,8 @@ def build_stage_decomposition(events: pd.DataFrame, test_df: pd.DataFrame, model
         rs = float(events[f"{policy_name}__realized_amount_recovered"].sum())
         rate = float(events[f"{policy_name}__realized_recovered"].mean())
         cost = float(sum(cost_for_candidate(t, DEFAULT_COSTS) for t in events[f"{policy_name}__selected_candidate_type"] if t != NO_ACTION))
-        if policy_name == "fixed_retry":
-            cost = float(events["fixed_retry__n_attempts"].sum()) * (DEFAULT_COSTS.retry_cost + DEFAULT_COSTS.operational_cost)
+        if policy_name in ("fixed_retry", "day10_improved_fallback"):
+            cost = float(events[f"{policy_name}__n_attempts"].sum()) * (DEFAULT_COSTS.retry_cost + DEFAULT_COSTS.operational_cost)
         if policy_name == "rule_based":
             cost += contact_cost(int(events["rule_based__n_contacts"].sum()), DEFAULT_COSTS)
         return {

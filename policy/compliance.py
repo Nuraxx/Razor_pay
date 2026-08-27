@@ -34,7 +34,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from policy.contact_hours import ContactHoursConfig, default_contact_hours_config, is_within_contact_hours
+from policy.contact_hours import ContactHoursConfig, default_contact_hours_config, is_within_contact_hours, next_contact_hours_start
 from policy.decision_engine import NO_ACTION
 from policy.guardrails import MAX_CANDIDATE_HORIZON_DAYS, MAX_RETRY_ATTEMPTS, is_classification_allowed
 
@@ -73,6 +73,14 @@ class ComplianceResult:
     communication_action_allowed: bool
     communication_reason: str
     rule_version: str
+    # DEFER, DON'T TERMINATE (final pre-submission audit): set ONLY when
+    # communication was blocked SPECIFICALLY by contact-hours -- never for
+    # an opt-out/consent/duplicate block, which re-trying later can never
+    # fix. None in every other case, including when communication is simply
+    # allowed. See policy/contact_hours.py::next_contact_hours_start and
+    # recovery/retry_sweep.py (which fires the deferred communication once
+    # this time arrives).
+    communication_deferred_until: datetime | None = None
 
     @property
     def allowed(self) -> bool:
@@ -91,6 +99,7 @@ class ComplianceResult:
             "payment_reason": self.payment_reason,
             "communication_action_allowed": self.communication_action_allowed,
             "communication_reason": self.communication_reason,
+            "communication_deferred_until": self.communication_deferred_until.isoformat() if self.communication_deferred_until else None,
         }
 
 
@@ -174,10 +183,20 @@ def evaluate_compliance(context: ComplianceContext, contact_hours_config: Contac
     else:
         comm_allowed, comm_reason = True, "communication_action_allowed: all compliance checks passed"
 
+    # DEFER, DON'T TERMINATE: only a pure contact-hours block gets a
+    # deferred-until time -- an opt-out/consent/duplicate block is not a
+    # timing problem, so there is nothing a later retry could fix.
+    deferred_until = (
+        next_contact_hours_start(context.selected_candidate_datetime, hours_config)
+        if (not comm_allowed and not comm_within_hours and context.selected_candidate_datetime is not None)
+        else None
+    )
+
     return ComplianceResult(
         payment_action_allowed=payment_allowed,
         payment_reason=payment_reason,
         communication_action_allowed=comm_allowed,
         communication_reason=comm_reason,
         rule_version=COMPLIANCE_RULE_VERSION,
+        communication_deferred_until=deferred_until,
     )

@@ -61,13 +61,14 @@ class TestSchedulerDisableMechanism:
         monkeypatch.setattr("app.main.init_db", lambda: None)  # never touch the real DB file from this test
         monkeypatch.setattr("app.config.settings.validate_webhook_secret_present", lambda: None)
         monkeypatch.setattr("app.config.settings.ENABLE_PROMISE_SWEEP_SCHEDULER", False)
+        monkeypatch.setattr("app.config.settings.ENABLE_RETRY_SWEEP_SCHEDULER", False)
 
         created_task = {"value": False}
 
         def _spy_create_task(coro):
             created_task["value"] = True
             coro.close()  # avoid an "coroutine was never awaited" warning
-            raise AssertionError("asyncio.create_task must not be called when the scheduler is disabled")
+            raise AssertionError("asyncio.create_task must not be called when both schedulers are disabled")
 
         monkeypatch.setattr("app.main.asyncio.create_task", _spy_create_task)
 

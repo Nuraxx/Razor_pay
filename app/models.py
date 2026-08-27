@@ -173,6 +173,34 @@ class PolicyDecision(Base):
     # "keep_model_when_better_than_rule" | "keep_model_unless_rule_has_clear_advantage"
     fallback_strategy: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+    # -- Added final pre-submission audit (MULTI-ATTEMPT PERSISTENCE, see ---
+    # policy/decision_engine_v4.py::build_retry_schedule_from_decision and ---
+    # recovery/retry_sweep.py). All nullable/additive -- existing rows never ---
+    # populate these, and `selected_candidate_type`/`selected_candidate_datetime` ---
+    # above remain exactly attempt 1, unchanged. JSON-serialized as TEXT, same ---
+    # convention as `llm_invocations.structured_output` / `audit_log.context_json` ---
+    # (this project has no native JSON column type / no migration tool -- see ---
+    # app/db.py's own docstring -- so this matches every other JSON-shaped field). ---
+    # `retry_schedule_next_index` starts at 1: index 0 IS this row's own attempt ---
+    # 1 (already decided, above); recovery/retry_sweep.py advances this field ---
+    # by exactly 1 per successfully-processed follow-up attempt, and its own ---
+    # WHERE clause (next_index < len(schedule)) makes re-running a sweep pass ---
+    # over an already-fully-advanced row a no-op -- idempotent by construction, ---
+    # no separate "already processed" flag needed.
+    retry_schedule_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retry_schedule_datetimes_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retry_schedule_next_index: Mapped[int] = mapped_column(Integer, default=1)
+
+    # -- Added final pre-submission audit (DEFER, DON'T TERMINATE, see -------
+    # policy/contact_hours.py::next_contact_hours_start and --------------
+    # recovery/retry_sweep.py). Set by recovery/orchestrator.py ONLY when ---
+    # communication was blocked SPECIFICALLY by contact-hours (never for an ---
+    # opt-out/consent/duplicate block); recovery/retry_sweep.py fires the ---
+    # deferred communication once this time arrives and then sets ---------
+    # `communication_deferred_sent=True` so it is never sent twice.
+    communication_deferred_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    communication_deferred_sent: Mapped[bool] = mapped_column(Boolean, default=False)
+
 
 class LLMInvocation(Base):
     """

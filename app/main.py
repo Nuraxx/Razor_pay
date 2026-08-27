@@ -30,6 +30,7 @@ from policy.policy_decision_store import REVENUE_DOMAIN_EVENT_ID_OFFSET
 from recovery.promise_service import record_customer_reply
 from recovery.revenue_orchestrator import orchestrate_revenue_event
 from recovery.revenue_schemas import RevenueRiskEventInput
+from recovery.retry_sweep import retry_sweep_background_loop
 from recovery.scheduler import promise_sweep_background_loop
 from recovery.webhook_pipeline import process_raw_event
 
@@ -52,12 +53,28 @@ async def lifespan(app: FastAPI):
     else:
         log.info("Promise sweep scheduler disabled (ENABLE_PROMISE_SWEEP_SCHEDULER=false)")
 
+    # MULTI-ATTEMPT PERSISTENCE (final pre-submission audit): same
+    # asyncio-loop pattern as the promise sweep above -- see
+    # recovery/retry_sweep.py for what it advances and why.
+    retry_sweep_task: asyncio.Task | None = None
+    if settings.ENABLE_RETRY_SWEEP_SCHEDULER:
+        retry_sweep_task = asyncio.create_task(retry_sweep_background_loop(settings.RETRY_SWEEP_INTERVAL_SECONDS))
+        log.info("Retry sweep scheduler started (interval=%ss)", settings.RETRY_SWEEP_INTERVAL_SECONDS)
+    else:
+        log.info("Retry sweep scheduler disabled (ENABLE_RETRY_SWEEP_SCHEDULER=false)")
+
     yield
 
     if sweep_task is not None:
         sweep_task.cancel()
         try:
             await sweep_task
+        except asyncio.CancelledError:
+            pass
+    if retry_sweep_task is not None:
+        retry_sweep_task.cancel()
+        try:
+            await retry_sweep_task
         except asyncio.CancelledError:
             pass
 

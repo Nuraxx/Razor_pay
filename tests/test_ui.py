@@ -265,7 +265,7 @@ def test_run_demo_scenario_executes_cleanly(scenario):
     result, audit_rows, _promise_rows = data.run_demo_scenario(scenario, model)
     assert result.final_status in (
         "RETRY_ALLOWED", "RETRY_BLOCKED", "COMMUNICATION_ALLOWED", "COMMUNICATION_BLOCKED",
-        "NO_ACTION", "POLICY_FALLBACK", "LLM_FALLBACK",
+        "COMMUNICATION_DEFERRED", "NO_ACTION", "POLICY_FALLBACK", "LLM_FALLBACK",
     )
     assert len(audit_rows) > 0
 

@@ -74,6 +74,7 @@ so this stays correct if a future day differentiates cost by candidate type.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Literal
 
@@ -380,6 +381,61 @@ def decide_engine_v4(
     raise ValueError(f"unknown fallback_mode: {fallback_mode!r}")
 
 
+def build_retry_schedule_from_decision(decision: Decision) -> tuple[list[str], list[datetime]]:
+    """MULTI-ATTEMPT PERSISTENCE (final pre-submission audit, see README "Day
+    10: multi-attempt persistence"): purely additive derivation of a
+    Fixed-Retry-style multi-attempt schedule from a SINGLE already-computed
+    `decide_engine_v4` Decision -- never changes `decision.selected_candidate_type`,
+    `decision.decision_source`, or anything persisted by
+    `decide_for_failure_event_engine_v4`. Callers that only care about the
+    single-attempt decision (the entire rest of this module, every existing
+    test) are completely unaffected.
+
+    WHY this exists: `policy/baselines.py::fixed_retry_baseline` schedules
+    THREE calendar-offset attempts (T+1/T+2/T+3) and only gives up once all
+    three fail; every model/rule-based policy in this codebase historically
+    made exactly ONE attempt per event. On held-out TEST this is the single
+    largest remaining source of the deployed policy's gap to Fixed Retry
+    (see policy/decision_engine_v4.py's ECONOMIC-CORRECTION FINDING above and
+    README "Day 10: economic correction" / "Day 10: multi-attempt
+    persistence").
+
+    HOW: slot 1 is exactly `decision.selected_candidate_type` -- the normal
+    margin/fallback-gated choice, unchanged. Slots 2+ backfill with the
+    NEXT-BEST DISTINCT candidate types from `decision.candidate_scores`,
+    ranked by MODEL B's OWN predicted net value (the same ranking
+    `decide_engine_v4` already computed to pick slot 1 -- no new scoring, no
+    new model call), up to `guardrails.MAX_RETRY_ATTEMPTS` total slots. This
+    is deliberately NOT a fixed T+1/T+2/T+3 calendar cadence like Fixed
+    Retry's -- it reuses this policy's own value ranking instead, since that
+    ranking is exactly what makes this policy a "model-driven" one rather
+    than a copy of Fixed Retry's naive schedule.
+
+    Returns `([], [])` when `decision.selected_candidate_type == NO_ACTION`
+    (nothing to schedule) -- a schedule of zero attempts is the correct,
+    honest representation, not an error."""
+    if decision.selected_candidate_type == NO_ACTION:
+        return [], []
+
+    types = [decision.selected_candidate_type]
+    datetimes = [decision.selected_candidate_datetime]
+    used = {decision.selected_candidate_type}
+
+    ranked_remaining = sorted(
+        (s for s in decision.candidate_scores if s.valid and s.candidate_type not in used),
+        key=lambda s: s.expected_net_value,
+        reverse=True,
+    )
+    for s in ranked_remaining:
+        if len(types) >= MAX_RETRY_ATTEMPTS:
+            break
+        types.append(s.candidate_type)
+        datetimes.append(s.candidate_datetime)
+        used.add(s.candidate_type)
+
+    return types, datetimes
+
+
 def _rule_based_only(
     event_id, subscription_id: str, failure_timestamp: datetime, amount: float, classification_bucket: str,
     valid_candidates, costs: InterventionCosts, invalid_scores: list[CandidateScore],
@@ -455,6 +511,13 @@ def decide_for_failure_event_engine_v4(
         fallback_advantage_threshold=fallback_advantage_threshold, model=model,
     )
 
+    # MULTI-ATTEMPT PERSISTENCE (final pre-submission audit): purely additive
+    # -- see build_retry_schedule_from_decision's own docstring. Never
+    # changes `result.selected_candidate_type` or anything else already
+    # assigned to decision_row below; recovery/retry_sweep.py is the only
+    # other reader of these three fields.
+    schedule_types, schedule_datetimes = build_retry_schedule_from_decision(result)
+
     decision_row = PolicyDecision(
         event_id=event_id,
         subscription_id=subscription_id,
@@ -473,6 +536,9 @@ def decide_for_failure_event_engine_v4(
         margin_threshold_used=result.margin_threshold_used,
         fallback_advantage_threshold=result.fallback_advantage_threshold,
         fallback_strategy=result.fallback_strategy,
+        retry_schedule_json=json.dumps(schedule_types) if schedule_types else None,
+        retry_schedule_datetimes_json=json.dumps([dt.isoformat() for dt in schedule_datetimes]) if schedule_datetimes else None,
+        retry_schedule_next_index=1,
     )
     db.add(decision_row)
     db.flush()

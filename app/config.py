@@ -57,10 +57,28 @@ class Settings:
     # window -- the only India-specific convention this project has any basis
     # to reference (this is a project guardrail, not a claim of TRAI/DPDP/RBI
     # regulatory compliance -- see policy/compliance.py's own disclaimer).
+    # RBI's Fair Practices Code (a stricter, lending-specific 08:00-19:00
+    # window with real enforcement history) is deliberately NOT the default
+    # here: this project is subscription/receivables recovery, not lending,
+    # so RBI's lending-specific code has no direct jurisdiction over it, and
+    # this codebase makes no claim that it does. TRAI's broader commercial-
+    # communication window is the closest applicable, sourced convention.
     CONTACT_HOURS_ENABLED: bool = os.getenv("CONTACT_HOURS_ENABLED", "true").lower() == "true"
     CONTACT_HOURS_TIMEZONE: str = os.getenv("CONTACT_HOURS_TIMEZONE", "Asia/Kolkata")
     CONTACT_HOURS_START: str = os.getenv("CONTACT_HOURS_START", "09:00")
     CONTACT_HOURS_END: str = os.getenv("CONTACT_HOURS_END", "21:00")
+
+    # MULTI-ATTEMPT PERSISTENCE (final pre-submission audit): recovery/retry_sweep.py,
+    # same in-process asyncio-loop pattern as ENABLE_PROMISE_SWEEP_SCHEDULER
+    # above (not a second scheduler framework -- see that module's docstring).
+    # Advances a PolicyDecision's own pre-computed retry_schedule (policy/
+    # decision_engine_v4.py::build_retry_schedule_from_decision) one step at a
+    # time as each step's scheduled time arrives, stopping early once
+    # RecoveryOutcome confirms recovery. Disabled the same way, for the same
+    # reason (never starts during tests -- FastAPI's lifespan never runs for a
+    # bare TestClient(app) used without an explicit `with` block).
+    ENABLE_RETRY_SWEEP_SCHEDULER: bool = os.getenv("ENABLE_RETRY_SWEEP_SCHEDULER", "true").lower() == "true"
+    RETRY_SWEEP_INTERVAL_SECONDS: int = int(os.getenv("RETRY_SWEEP_INTERVAL_SECONDS", "300"))
 
     def validate_webhook_secret_present(self) -> None:
         if not self.RAZORPAY_WEBHOOK_SECRET:

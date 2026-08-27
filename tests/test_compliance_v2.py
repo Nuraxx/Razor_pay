@@ -177,6 +177,14 @@ class TestNewDomainGates:
         assert result.communication_verdict == "BLOCKED"
         assert "outside_contact_hours" in result.communication_reason
         assert result.payment_verdict == "ALLOWED"
+        # DEFER, DON'T TERMINATE (final pre-submission audit): a pure
+        # contact-hours block carries the next window's start.
+        assert result.communication_deferred_until == datetime(2026, 2, 26, 3, 30, 0)  # 2026-02-26 09:00 IST
+
+    def test_opt_out_block_never_sets_deferred_until_new_domain(self):
+        result = evaluate_compliance_v2(_domain_context(customer_opted_out=True))
+        assert result.communication_verdict == "BLOCKED"
+        assert result.communication_deferred_until is None
 
 
 class TestHumanReviewVerdict:

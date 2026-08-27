@@ -113,6 +113,9 @@ class TestEvaluationIntegration:
         # the NO_ACTION event), and rule_based's by n_contacts (0 here, so
         # its cost matches the other policies' plain per-action retry_cost).
         events["fixed_retry__n_attempts"] = [1, 1, 0]
+        # MULTI-ATTEMPT PERSISTENCE: day10_improved_fallback is costed the
+        # same n_attempts-based way as fixed_retry -- see summarize_economics.
+        events["day10_improved_fallback__n_attempts"] = [1, 1, 0]
         events["rule_based__n_contacts"] = [0, 0, 0]
         realized_summary = {name: {"total_recovered_rs": 100.0, "recovery_rate": 2 / 3} for name in POLICY_NAMES}
 

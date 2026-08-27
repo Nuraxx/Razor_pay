@@ -31,7 +31,7 @@ from datetime import datetime, timedelta
 from typing import Literal
 
 from policy.compliance import COMPLIANCE_RULE_VERSION, ComplianceContext, evaluate_compliance
-from policy.contact_hours import ContactHoursConfig, default_contact_hours_config, is_within_contact_hours
+from policy.contact_hours import ContactHoursConfig, default_contact_hours_config, is_within_contact_hours, next_contact_hours_start
 from policy.decision_engine import NO_ACTION
 from policy.guardrails import MAX_CANDIDATE_HORIZON_DAYS, MAX_RETRY_ATTEMPTS
 
@@ -72,6 +72,9 @@ class GeneralizedComplianceResult:
     communication_verdict: GateVerdict
     communication_reason: str
     rule_version: str
+    # DEFER, DON'T TERMINATE -- see policy/compliance.py::ComplianceResult's
+    # own field of the same name; identical semantics here.
+    communication_deferred_until: datetime | None = None
 
     @property
     def payment_action_allowed(self) -> bool:
@@ -90,6 +93,7 @@ class GeneralizedComplianceResult:
             "rule_version": self.rule_version,
             "payment_action_allowed": self.payment_action_allowed,
             "communication_action_allowed": self.communication_action_allowed,
+            "communication_deferred_until": self.communication_deferred_until.isoformat() if self.communication_deferred_until else None,
         }
 
 
@@ -164,10 +168,17 @@ def _evaluate_new_domain(context: GeneralizedComplianceContext, hours_config: Co
     else:
         comm_verdict, comm_reason = "ALLOWED", "communication_action_allowed: all compliance checks passed"
 
+    deferred_until = (
+        next_contact_hours_start(context.selected_candidate_datetime, hours_config)
+        if (comm_verdict == "BLOCKED" and not comm_within_hours and context.selected_candidate_datetime is not None)
+        else None
+    )
+
     return GeneralizedComplianceResult(
         payment_verdict=payment_verdict, payment_reason=payment_reason,
         communication_verdict=comm_verdict, communication_reason=comm_reason,
         rule_version=COMPLIANCE_V2_RULE_VERSION,
+        communication_deferred_until=deferred_until,
     )
 
 
@@ -191,5 +202,6 @@ def evaluate_compliance_v2(context: GeneralizedComplianceContext, contact_hours_
             communication_verdict="ALLOWED" if legacy_result.communication_action_allowed else "BLOCKED",
             communication_reason=legacy_result.communication_reason,
             rule_version=legacy_result.rule_version,
+            communication_deferred_until=legacy_result.communication_deferred_until,
         )
     return _evaluate_new_domain(context, hours_config)

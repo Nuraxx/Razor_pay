@@ -23,6 +23,18 @@ see recovery/orchestrator.py for where it's actually computed):
                                event reports; it is also what a hard_decline
                                event reports if the customer separately
                                opted out of messaging.
+    2b. COMMUNICATION_DEFERRED -- final pre-submission audit ("defer, don't
+                               terminate"): the ONE special case of the block
+                               above that is purely a TIMING problem --
+                               contact-hours (policy/contact_hours.py). Never
+                               used for opt-out/consent/duplicate blocks
+                               (those are not timing problems; a later retry
+                               cannot fix them, so they stay
+                               COMMUNICATION_BLOCKED). `communication_deferred_until`
+                               below carries the next contact-hours window's
+                               start; recovery/retry_sweep.py fires the
+                               deferred communication once that time arrives,
+                               instead of losing it outright.
     3. NO_ACTION             -- payment is NO_ACTION AND no communication
                                was attempted either (customer_cancelled /
                                unmapped, or a hard_decline event where
@@ -80,6 +92,7 @@ FinalStatus = Literal[
     "RETRY_BLOCKED",
     "COMMUNICATION_ALLOWED",
     "COMMUNICATION_BLOCKED",
+    "COMMUNICATION_DEFERRED",
     "NO_ACTION",
     "POLICY_FALLBACK",
     "LLM_FALLBACK",
@@ -89,7 +102,9 @@ FinalStatus = Literal[
 PaymentAction = Literal["retry_scheduled", "blocked", "no_action"]
 
 # COMMUNICATION ACTION (brief section 3) -- exactly one of these per orchestration call.
-CommunicationAction = Literal["sent", "fallback_used", "blocked", "skipped"]
+# "deferred" (final pre-submission audit) -- a contact-hours-only block;
+# see module docstring's COMMUNICATION_DEFERRED entry.
+CommunicationAction = Literal["sent", "fallback_used", "blocked", "deferred", "skipped"]
 
 
 @dataclass(frozen=True)
@@ -126,6 +141,11 @@ class RecoveryExecutionResult:
     promise_to_pay_id: int | None = field(default=None, compare=False)
     original_candidate_type: str | None = field(default=None, compare=False)
     original_candidate_datetime: datetime | None = field(default=None, compare=False)
+
+    # DEFER, DON'T TERMINATE (final pre-submission audit): set only when
+    # communication_action == "deferred" -- see module docstring's
+    # COMMUNICATION_DEFERRED entry.
+    communication_deferred_until: datetime | None = field(default=None, compare=False)
 
     def to_dict(self) -> dict:
         def _serialize(value):

@@ -142,6 +142,26 @@ class TestContactHoursGate:
         result = evaluate_compliance(_valid_context(selected_candidate_datetime=inside_hours_dt), self.IST_9_TO_21)
         assert result.communication_action_allowed is True
 
+    def test_contact_hours_block_sets_deferred_until_the_next_window(self):
+        # DEFER, DON'T TERMINATE (final pre-submission audit): a pure
+        # contact-hours block must carry the next window's start, not just a
+        # dead-end "blocked" verdict.
+        outside_hours_dt = datetime(2026, 2, 25, 18, 0, 0)  # 23:30 IST
+        result = evaluate_compliance(_valid_context(selected_candidate_datetime=outside_hours_dt), self.IST_9_TO_21)
+        assert result.communication_deferred_until == datetime(2026, 2, 26, 3, 30, 0)  # 2026-02-26 09:00 IST
+
+    def test_opt_out_block_never_sets_deferred_until(self):
+        # A non-timing block (opt-out) must NOT get a deferred-until time --
+        # a later retry can never fix an opt-out.
+        result = evaluate_compliance(_valid_context(customer_opted_out=True))
+        assert result.communication_action_allowed is False
+        assert result.communication_deferred_until is None
+
+    def test_communication_allowed_has_no_deferred_until(self):
+        result = evaluate_compliance(_valid_context())
+        assert result.communication_action_allowed is True
+        assert result.communication_deferred_until is None
+
     def test_no_candidate_datetime_does_not_block_on_contact_hours(self):
         # NO_ACTION path: nothing scheduled, nothing to check -- must not be
         # blocked by a contact-hours reason (it's already blocked for the

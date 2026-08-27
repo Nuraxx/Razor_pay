@@ -297,7 +297,15 @@ def orchestrate_recovery(
     elif not communication_eligible:
         communication_action = "skipped"
     elif not compliance.communication_action_allowed:
-        communication_action = "blocked"
+        # DEFER, DON'T TERMINATE (final pre-submission audit): a contact-
+        # hours-only block gets "deferred" (recovery/retry_sweep.py fires it
+        # once the window opens) instead of a permanent "blocked" -- every
+        # other block reason (opt-out, consent, duplicate) is not a timing
+        # problem and stays "blocked".
+        if compliance.communication_deferred_until is not None:
+            communication_action = "deferred"
+        else:
+            communication_action = "blocked"
         communication_reason = compliance.communication_reason
     else:
         will_retry = compliance.payment_action_allowed
@@ -318,6 +326,8 @@ def orchestrate_recovery(
         final_status = "RETRY_BLOCKED"
     elif communication_action == "blocked":
         final_status = "COMMUNICATION_BLOCKED"
+    elif communication_action == "deferred":
+        final_status = "COMMUNICATION_DEFERRED"
     elif effective_candidate_type == NO_ACTION and communication_action == "skipped":
         final_status = "NO_ACTION"
     elif policy_row.decision_source == SOURCE_FALLBACK:
@@ -352,7 +362,20 @@ def orchestrate_recovery(
         promise_to_pay_id=active_promise.id if active_promise is not None else None,
         original_candidate_type=policy_row.selected_candidate_type,
         original_candidate_datetime=policy_row.selected_candidate_datetime,
+        communication_deferred_until=compliance.communication_deferred_until if communication_action == "deferred" else None,
     )
+
+    # DEFER, DON'T TERMINATE (final pre-submission audit): persist the
+    # deferred-until time on the SAME policy_decisions row recovery/retry_sweep.py
+    # already reads for multi-attempt persistence -- one sweep pass handles
+    # both concerns. Only ever set once (communication_action can only be
+    # "deferred" the FIRST time a given event is orchestrated -- a second
+    # call for the same event_id short-circuits via `existing is not None` in
+    # decide_for_failure_event_engine_v4, so this never overwrites an
+    # already-firing deferred communication with a stale new one).
+    if communication_action == "deferred":
+        policy_row.communication_deferred_until = compliance.communication_deferred_until
+        db.add(policy_row)
 
     # --- 6b. Generalized outcome tracking (Track-03, additive) -------------
     # app.models.RecoveryOutcome's own docstring: "the generalized revenue-

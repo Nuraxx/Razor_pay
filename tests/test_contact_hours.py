@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from policy.contact_hours import ContactHoursConfig, is_within_contact_hours, parse_contact_hours_config
+from policy.contact_hours import ContactHoursConfig, is_within_contact_hours, next_contact_hours_start, parse_contact_hours_config
 
 IST_CONFIG = ContactHoursConfig(enabled=True, timezone_name="Asia/Kolkata", start=datetime(2000, 1, 1, 9, 0).time(), end=datetime(2000, 1, 1, 21, 0).time())
 
@@ -130,3 +130,50 @@ class TestConfigParsingErrors:
     def test_malformed_time_string_raises(self):
         with pytest.raises(ValueError):
             parse_contact_hours_config(enabled=True, timezone_name="Asia/Kolkata", start_str="not-a-time", end_str="21:00")
+
+
+# ---------------------------------------------------------------------------
+# DEFER, DON'T TERMINATE (final pre-submission audit): next_contact_hours_start
+# ---------------------------------------------------------------------------
+
+class TestNextContactHoursStart:
+    def test_already_within_window_returns_unchanged(self):
+        dt = datetime(2026, 6, 15, 10, 0, 0)  # 15:30 IST -- within [09:00, 21:00)
+        assert next_contact_hours_start(dt, IST_CONFIG) == dt
+
+    def test_before_window_defers_to_later_today(self):
+        # 02:00 UTC = 07:30 IST -- before 09:00 IST start.
+        dt = datetime(2026, 6, 15, 2, 0, 0)
+        deferred = next_contact_hours_start(dt, IST_CONFIG)
+        assert deferred == datetime(2026, 6, 15, 3, 30, 0)  # 2026-06-15 09:00 IST = 03:30 UTC
+        assert is_within_contact_hours(deferred, IST_CONFIG)[0] is True
+
+    def test_after_window_defers_to_tomorrow(self):
+        # 18:00 UTC = 23:30 IST -- after 21:00 IST end.
+        dt = datetime(2026, 6, 15, 18, 0, 0)
+        deferred = next_contact_hours_start(dt, IST_CONFIG)
+        assert deferred == datetime(2026, 6, 16, 3, 30, 0)  # 2026-06-16 09:00 IST = 03:30 UTC
+        assert is_within_contact_hours(deferred, IST_CONFIG)[0] is True
+
+    def test_preserves_naive_utc_convention_on_the_way_out(self):
+        dt = datetime(2026, 6, 15, 18, 0, 0)
+        deferred = next_contact_hours_start(dt, IST_CONFIG)
+        assert deferred.tzinfo is None
+
+    def test_aware_input_gives_aware_output(self):
+        dt = datetime(2026, 6, 15, 18, 0, 0, tzinfo=timezone.utc)
+        deferred = next_contact_hours_start(dt, IST_CONFIG)
+        assert deferred.tzinfo is not None
+        assert deferred.astimezone(timezone.utc).replace(tzinfo=None) == datetime(2026, 6, 16, 3, 30, 0)
+
+    def test_disabled_config_returns_unchanged(self):
+        disabled = ContactHoursConfig(enabled=False, timezone_name="Asia/Kolkata", start=IST_CONFIG.start, end=IST_CONFIG.end)
+        dt = datetime(2026, 6, 15, 18, 0, 0)  # would be deferred if enabled
+        assert next_contact_hours_start(dt, disabled) == dt
+
+    def test_overnight_window_defers_correctly(self):
+        overnight = ContactHoursConfig(enabled=True, timezone_name="UTC", start=datetime(2000, 1, 1, 22, 0).time(), end=datetime(2000, 1, 1, 6, 0).time())
+        dt = datetime(2026, 6, 15, 12, 0, 0)  # midday -- outside [22:00, 06:00)
+        deferred = next_contact_hours_start(dt, overnight)
+        assert deferred == datetime(2026, 6, 15, 22, 0, 0)  # opens later the same day
+        assert is_within_contact_hours(deferred, overnight)[0] is True

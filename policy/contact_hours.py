@@ -34,7 +34,7 @@ Design:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time as dt_time, timezone
+from datetime import datetime, time as dt_time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 
@@ -78,6 +78,42 @@ def is_within_contact_hours(candidate_datetime: datetime, config: ContactHoursCo
     if within:
         return True, f"within_contact_hours: {local_time.isoformat(timespec='minutes')} {config.timezone_name} is within {window_desc}"
     return False, f"outside_contact_hours: {local_time.isoformat(timespec='minutes')} {config.timezone_name} is outside {window_desc}"
+
+
+def next_contact_hours_start(candidate_datetime: datetime, config: ContactHoursConfig) -> datetime:
+    """DEFER, DON'T TERMINATE (final pre-submission audit): if
+    `candidate_datetime` already falls within the window (or the gate is
+    disabled), returns it UNCHANGED -- nothing to defer. Otherwise returns
+    the next moment the window opens, in the SAME tz-representation
+    convention as the input (naive in -> naive-UTC out, matching this
+    codebase's own convention -- see module docstring; aware in -> aware
+    out). Used by policy/compliance.py / policy/compliance_v2.py to populate
+    `ComplianceResult.communication_deferred_until` whenever a communication
+    is blocked SPECIFICALLY by contact-hours (never for an opt-out/consent/
+    duplicate block, which re-trying later can never fix) and by
+    recovery/retry_sweep.py to actually fire that deferred communication
+    once its window opens -- so a late-evening or overnight failure gets
+    its nudge delayed a few hours, not lost outright.
+
+    Handles both a plain daytime window (start <= end, e.g. 09:00-21:00) and
+    an overnight one (start > end, e.g. 22:00-06:00) with the SAME branch:
+    if the local wall-clock time is before `config.start`, the window opens
+    later TODAY; otherwise it opens TOMORROW. This is correct for both
+    shapes because `is_within_contact_hours` already filters out every case
+    where the window is already open before this function is ever reached."""
+    within, _ = is_within_contact_hours(candidate_datetime, config)
+    if within:
+        return candidate_datetime
+
+    was_naive = candidate_datetime.tzinfo is None
+    aware = candidate_datetime if not was_naive else candidate_datetime.replace(tzinfo=timezone.utc)
+    local = aware.astimezone(ZoneInfo(config.timezone_name))
+
+    start_today_local = local.replace(hour=config.start.hour, minute=config.start.minute, second=0, microsecond=0)
+    next_start_local = start_today_local if local.time() < config.start else start_today_local + timedelta(days=1)
+
+    next_start_utc = next_start_local.astimezone(timezone.utc)
+    return next_start_utc.replace(tzinfo=None) if was_naive else next_start_utc
 
 
 def default_contact_hours_config() -> ContactHoursConfig:

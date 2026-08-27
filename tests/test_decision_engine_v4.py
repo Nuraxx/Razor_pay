@@ -34,6 +34,7 @@ from policy.decision_engine_v4 import (
     POLICY_VERSION_V4,
     _rule_has_any_advantage,
     _rule_has_clear_advantage,
+    build_retry_schedule_from_decision,
     decide_engine_v4,
     decide_for_failure_event_engine_v4,
     fallback_advantage,
@@ -351,6 +352,72 @@ def test_default_config_never_blindly_swaps_away_from_models_own_best_pick():
 
 
 # ---------------------------------------------------------------------------
+# MULTI-ATTEMPT PERSISTENCE (final pre-submission audit): build_retry_schedule_from_decision
+# ---------------------------------------------------------------------------
+
+def test_build_retry_schedule_ranks_remaining_by_net_value():
+    # immediate=100, plus_1_day_morning=90, payday_window=80, plus_3_days=70,
+    # month_end_window=60 -- CANDIDATE_TYPES order, so net-value ranking and
+    # list order coincide here (deliberately, for a readable assertion).
+    values = [100.0, 90.0, 80.0, 70.0, 60.0]
+    d = decide_engine_v4(60001, "sub_v4_schedule_1", FAILURE_TS, 1000.0, "retryable_soft", FAILURE_CONTEXT, margin_threshold=1e9, model=_fake_model_dict(values))
+    assert d.selected_candidate_type == "immediate"
+    types, datetimes = build_retry_schedule_from_decision(d)
+    assert types == ["immediate", "plus_1_day_morning", "payday_window"]  # capped at MAX_RETRY_ATTEMPTS=3
+    assert len(datetimes) == len(types) == MAX_RETRY_ATTEMPTS
+    assert types[0] == d.selected_candidate_type
+    assert datetimes[0] == d.selected_candidate_datetime
+
+
+def test_build_retry_schedule_returns_empty_for_no_action():
+    d = decide_engine_v4(60002, "sub_v4_schedule_2", FAILURE_TS, 1000.0, "hard_decline", FAILURE_CONTEXT, model=_fake_model_dict([100.0] * 5))
+    assert d.selected_candidate_type == NO_ACTION
+    types, datetimes = build_retry_schedule_from_decision(d)
+    assert types == []
+    assert datetimes == []
+
+
+def test_build_retry_schedule_never_exceeds_max_retry_attempts():
+    values = [50.0, 49.0, 48.0, 47.0, 46.0]
+    d = decide_engine_v4(60003, "sub_v4_schedule_3", FAILURE_TS, 1000.0, "retryable_soft", FAILURE_CONTEXT, margin_threshold=1e9, model=_fake_model_dict(values))
+    types, datetimes = build_retry_schedule_from_decision(d)
+    assert len(types) <= MAX_RETRY_ATTEMPTS
+    assert len(set(types)) == len(types)  # no candidate type repeated
+
+
+def test_build_retry_schedule_first_slot_matches_selected_candidate_under_fallback():
+    # Ambiguous margin, ALWAYS mode -- forces a rule_based_fallback decision
+    # (a real historical failure mode, see the ECONOMIC-CORRECTION FINDING);
+    # slot 1 of the schedule must still be exactly whatever was actually
+    # selected, regardless of which tier decided it.
+    values = [100.0, 99.0, 98.0, 97.0, 96.0]
+    d = decide_engine_v4(60004, "sub_v4_schedule_4", FAILURE_TS, 1000.0, "retryable_soft", FAILURE_CONTEXT, margin_threshold=25.0, fallback_mode=FALLBACK_MODE_ALWAYS, model=_fake_model_dict(values))
+    assert d.decision_source == SOURCE_FALLBACK
+    types, datetimes = build_retry_schedule_from_decision(d)
+    assert types[0] == d.selected_candidate_type
+    assert datetimes[0] == d.selected_candidate_datetime
+
+
+def test_build_retry_schedule_degrades_to_single_attempt_when_model_unavailable(monkeypatch):
+    # When Model B itself is unavailable, decision.candidate_scores holds no
+    # scored candidates to rank (see _rule_based_only) -- the schedule must
+    # safely degrade to just the one fallback-selected attempt, never crash.
+    import policy.decision_engine_v4 as v4
+
+    def _raise(model):
+        from policy.decision_engine import ModelUnavailableError
+
+        raise ModelUnavailableError("no artifact")
+
+    monkeypatch.setattr(v4, "_load_model_safely", _raise)
+    d = decide_engine_v4(60005, "sub_v4_schedule_5", FAILURE_TS, 1000.0, "retryable_soft", FAILURE_CONTEXT, model=None)
+    assert d.decision_source == SOURCE_FALLBACK
+    types, datetimes = build_retry_schedule_from_decision(d)
+    assert types == [d.selected_candidate_type]
+    assert datetimes == [d.selected_candidate_datetime]
+
+
+# ---------------------------------------------------------------------------
 # DB-backed: audit logging + idempotency
 # ---------------------------------------------------------------------------
 
@@ -373,6 +440,43 @@ def test_decide_for_failure_event_engine_v4_creates_decision_and_audit_rows(test
     assert audit_rows[0].actor == "policy"
     assert "fallback_strategy=" in audit_rows[0].reason
     assert "margin_threshold=" in audit_rows[0].reason
+    db.close()
+
+
+def test_decide_for_failure_event_engine_v4_persists_retry_schedule(test_db_session):
+    # MULTI-ATTEMPT PERSISTENCE (final pre-submission audit): the DB-aware
+    # wrapper must populate retry_schedule_json/retry_schedule_datetimes_json
+    # from build_retry_schedule_from_decision -- purely additive, so
+    # selected_candidate_type/decision_source above are unaffected (already
+    # asserted by the sibling test above using the same fake model values).
+    import json
+
+    db = test_db_session()
+    row, created = decide_for_failure_event_engine_v4(
+        db, event_id=50010, subscription_id="sub_V4RetrySchedule", failure_timestamp=FAILURE_TS,
+        amount=1000.0, classification_bucket="retryable_soft", failure_context=FAILURE_CONTEXT,
+        model=_fake_model_dict([100.0, 90.0, 80.0, 70.0, 60.0]),
+    )
+    assert created is True
+    schedule_types = json.loads(row.retry_schedule_json)
+    schedule_datetimes = json.loads(row.retry_schedule_datetimes_json)
+    assert schedule_types[0] == row.selected_candidate_type
+    assert len(schedule_types) == len(schedule_datetimes) == MAX_RETRY_ATTEMPTS
+    assert row.retry_schedule_next_index == 1
+    db.close()
+
+
+def test_decide_for_failure_event_engine_v4_no_action_leaves_retry_schedule_null(test_db_session):
+    db = test_db_session()
+    row, created = decide_for_failure_event_engine_v4(
+        db, event_id=50011, subscription_id="sub_V4RetryScheduleNoAction", failure_timestamp=FAILURE_TS,
+        amount=1000.0, classification_bucket="hard_decline", failure_context=FAILURE_CONTEXT,
+        model=_fake_model_dict([100.0] * 5),
+    )
+    assert created is True
+    assert row.selected_candidate_type == NO_ACTION
+    assert row.retry_schedule_json is None
+    assert row.retry_schedule_datetimes_json is None
     db.close()
 
 

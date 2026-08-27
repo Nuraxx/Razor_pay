@@ -629,3 +629,41 @@ def test_legacy_recovery_outcome_is_idempotent_across_repeated_orchestration(tes
     orchestrate_recovery(db, _make_event(event_id=48, error_reason="insufficient_fund"), model=_fake_model())
     assert db.query(RecoveryOutcome).filter(RecoveryOutcome.event_id == 48, RecoveryOutcome.event_type == "payment_failed").count() == 1
     db.close()
+
+
+# ---------------------------------------------------------------------------
+# DEFER, DON'T TERMINATE (final pre-submission audit): contact-hours block
+# defers communication instead of losing it outright.
+# ---------------------------------------------------------------------------
+
+def test_communication_deferred_when_candidate_falls_outside_contact_hours(test_db_session):
+    # immediate = failure_timestamp + 1h = 2026-02-24 21:00 UTC = 02:30 IST
+    # (next day) -- outside the default [09:00, 21:00) IST window. Forced via
+    # _fake_model's default values (huge margin -> "immediate", CANDIDATE_TYPES[0]).
+    late_failure_ts = datetime(2026, 2, 24, 20, 0, 0)
+    db = test_db_session()
+    result = orchestrate_recovery(db, _make_event(event_id=900, failure_timestamp=late_failure_ts, error_reason="insufficient_fund"), model=_fake_model())
+
+    assert result.payment_action == "retry_scheduled"  # payment itself is unaffected by contact hours
+    assert result.communication_action == "deferred"
+    assert result.final_status == "COMMUNICATION_DEFERRED"
+    assert result.communication_deferred_until is not None
+    assert result.communication_deferred_until > late_failure_ts
+
+    row = db.query(PolicyDecision).filter(PolicyDecision.event_id == 900).first()
+    assert row.communication_deferred_until is not None
+    assert row.communication_deferred_sent is False
+    db.close()
+
+
+def test_communication_deferred_never_fires_the_llm_at_decision_time(test_db_session):
+    # A deferred communication must not have already called the LLM /
+    # written an LLMInvocation row -- that only happens later, when
+    # recovery/retry_sweep.py fires it.
+    late_failure_ts = datetime(2026, 2, 24, 20, 0, 0)
+    db = test_db_session()
+    result = orchestrate_recovery(db, _make_event(event_id=901, failure_timestamp=late_failure_ts, error_reason="insufficient_fund"), model=_fake_model())
+    assert result.communication_action == "deferred"
+    assert result.llm_task_name is None
+    assert db.query(LLMInvocation).filter(LLMInvocation.event_id == 901).count() == 0
+    db.close()
