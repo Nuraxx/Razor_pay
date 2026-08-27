@@ -33,9 +33,12 @@ consume.
 ./venv/bin/python data/generate_synthetic_dataset.py
 ```
 
-Optional flags: `--seed 42` (default), `--n-subscriptions 200` (default),
-`--output-dir data` (default). The command prints a dataset summary and a
-validation report, and exits non-zero if validation fails.
+Optional flags: `--seed 42` (default), `--n-subscriptions 1500` (default,
+increased from 200 — final pre-submission audit, "improve Model B using more
+synthetic data only"; see §16d in the top-level README for the before/after
+comparison this produced), `--output-dir data` (default). The command prints
+a dataset summary and a validation report, and exits non-zero if validation
+fails.
 
 ## Reproducibility
 
@@ -227,11 +230,22 @@ rest, and is `0` whenever `recovered_within_14d` is `False`.
 - **AUC target is unverified.** No model has been trained against this data
   as of Day 3; the "0.75–0.85" figure is a design intent based on the
   chosen effect sizes and noise level, not a measured result.
-- **Small by design.** ~200 subscriptions / ~300 failure events is
-  intentionally small so the dataset stays reproducible and reviewable in
-  a diff. It is not large enough for robust model evaluation on its own —
-  regenerate with a larger `--n-subscriptions` if Day 4/5 needs more data,
-  which will change every downstream number.
+- **Default increased from 200 to 1500 subscriptions** (final pre-submission
+  audit — ~2,344 failure events at the current default, up from ~300).
+  Regenerating changes every downstream number, exactly as this paragraph
+  originally warned it would: `data/raw/*.csv`, `data/processed/*.csv`, and
+  every model artifact trained from them must all be regenerated/retrained
+  together (see the top-level README's §16d) — an artifact trained against
+  one `--n-subscriptions` value and evaluated against data regenerated at a
+  different one would silently compare two different populations. Still
+  reproducible and byte-identical for a given seed; no longer small enough
+  to review as a full diff (the original 200-subscription rationale for
+  that property), a deliberate tradeoff made to give the model more signal.
+- **Still synthetic, regardless of size.** More rows does not change the
+  disclaimer at the top of this file — every number remains an authored
+  assumption from a hand-designed probabilistic model, not real Razorpay
+  behavior. A larger N makes internal signal-to-noise/statistical-power
+  arguments more reliable; it does not make the data any less synthetic.
 - **Only one `error_reason`.** Day 3 only generates `insufficient_fund`
   failures, per Day-3 scope — `hard_decline` / `customer_cancelled`
   failures (already classifiable per Day 2) are not represented here.

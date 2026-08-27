@@ -34,7 +34,7 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 
 DEFAULT_SEED = 42
-DEFAULT_N_SUBSCRIPTIONS = 200
+DEFAULT_N_SUBSCRIPTIONS = 1500
 
 # Fixed reference date the whole dataset is generated relative to. Using a
 # constant (never datetime.now()) is what makes generation reproducible
