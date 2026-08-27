@@ -2,10 +2,12 @@
 
 **Razorpay AI Buildathon — Track 3: AI Revenue Recovery**
 
-**Current status:** 891 tests passing (`pytest tests -q`), full test count
-current as of the most recent unified-ML-generalization audit pass — this is a
+**Current status:** 964 tests collected, 962 passing, 2 skipped
+(`pytest tests -q`) as of the dataset-scaling pass (§16d) — this is a
 point-in-time figure, not a claim this document keeps itself in sync with;
-verify with the command above if it matters for your purposes.
+verify with the command above if it matters for your purposes. (Corrected
+here from a stale "891 tests passing" that disagreed with §15's own count —
+the two should never be allowed to drift apart again.)
 
 An offline-verifiable prototype that replaces Razorpay Subscriptions' blind
 fixed-interval retry (retry once/day for 3 days, regardless of *why* a charge
@@ -596,13 +598,14 @@ not just `-m`).
 ./venv/bin/python -m pytest tests/ -v
 ```
 
-**964 tests, 964 passing** (verified by direct execution in this final
-pre-submission audit pass — up from 891 after adding the contact-hours,
-fresh-clone-database, economic-correction, multi-attempt-persistence,
-deferred-communication, Oracle-apples-to-apples, and re-check-before-acting
-regression tests; the historical "432/432" figure below in §17 predates
-Track-03 entirely and is kept only as a point-in-time record — always trust
-`pytest tests -q`'s own output over any number in this document).
+**964 tests collected, 962 passing, 2 skipped** (verified by direct execution
+in this final pre-submission audit pass — up from 891 after adding the
+contact-hours, fresh-clone-database, economic-correction,
+multi-attempt-persistence, deferred-communication, Oracle-apples-to-apples,
+and re-check-before-acting regression tests; the historical "432/432" figure
+below in §17 predates Track-03 entirely and is kept only as a point-in-time
+record — always trust `pytest tests -q`'s own output over any number in this
+document, including this one).
 Coverage includes, per boundary: malformed webhook body, invalid/missing/
 tampered signature, duplicate webhook delivery, missing required fields, an
 unsupported event type or a missing subscription/payment entity, a
@@ -1404,10 +1407,14 @@ pytest output as its designed function.
    regressor trained directly on the synthetic generator's own latent
    expected-value target, not the noisy observed outcome. This is
    disclosed thoroughly in the appendix as a deliberate, diagnosed pivot —
-   but it means the deployed model's strong-looking fit (R²≈0.87) partly
-   reflects reconstructing the generator's own formula, and the
-   specification's originally-scoped Model 1 architecture was never
-   actually shipped as the production model.
+   but it means the deployed model's strong-looking fit (R²=0.7977 test /
+   0.8459 validation on the current 1,500-subscription population — see
+   §16d; this was R²≈0.87 on the earlier 200-subscription population,
+   corrected here so this section never again disagrees with the
+   evaluation section it's summarizing) partly reflects reconstructing the
+   generator's own formula, and the specification's originally-scoped
+   Model 1 architecture was never actually shipped as the production
+   model.
 5. **All evaluation numbers are synthetic.** Nothing in this repository has
    touched a real Razorpay production account, a real customer, or a real
    message-sending API. The dataset is archetype-generated with
