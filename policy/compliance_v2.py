@@ -1,7 +1,7 @@
 """
 Track-03 generalized compliance gate: ALLOWED / BLOCKED / HUMAN_REVIEW.
 
-`policy/compliance.py` (Day-12, `evaluate_compliance`) stays byte-for-byte
+`policy/compliance.py` (`evaluate_compliance`) stays byte-for-byte
 UNCHANGED -- this module is strictly additive. For the existing
 payment_failed / subscription_payment_failed event types, `evaluate_compliance_v2`
 below delegates to the original `evaluate_compliance` unmodified and maps its

@@ -1,7 +1,7 @@
 """
 SQLAlchemy engine/session setup.
 
-SQLite for Day 1 (and the hackathon build generally) — see the stack-lock
+SQLite for this hackathon build — see the stack-lock
 rationale: zero ops for a few hundred rows, and the engine is created from a
 single DATABASE_URL string, so swapping to Postgres later is a config change,
 not a rewrite.

@@ -1,5 +1,5 @@
 """
-Day-4 model pipeline tests.
+Model pipeline tests.
 
 Uses a small synthetic dataset generated fresh via data.generate_synthetic_dataset
 (not the committed data/processed/*.csv) so these tests are fast and fully

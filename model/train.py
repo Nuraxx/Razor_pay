@@ -1,5 +1,5 @@
 """
-Day-4 training entry point.
+Training entry point.
 
     ./venv/bin/python model/train.py
 

@@ -5,7 +5,7 @@ Deliberately a NEW function, not a refactor of
 policy/decision_engine_v4.py::decide_for_failure_event_engine_v4's own
 persistence block -- duplicating the idempotency-check/row-write/audit-row
 pattern here keeps that tested function's code shape completely untouched
-(same "Day 10 doesn't touch Day 9" precedent this codebase already sets).
+(same "policy-v4 doesn't touch policy-v3" precedent this codebase already sets).
 
 ID NAMESPACING (critical): app.models.PolicyDecision.event_id carries a
 database-level UNIQUE constraint. It was designed under the assumption that

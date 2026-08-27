@@ -1,7 +1,7 @@
 """
 FIX #2: turns one already-stored, already-verified `RawEvent` into a full
 recovery decision -- the missing link the full-system audit identified
-between "webhook received and stored" (app/main.py, Day 1, unmodified) and
+between "webhook received and stored" (app/main.py, unmodified) and
 "classified and orchestrated" (previously a manual, separately-run script).
 
 Two payment.failed paths, both reaching a full recovery pipeline:
@@ -9,7 +9,7 @@ Two payment.failed paths, both reaching a full recovery pipeline:
     RawEvent (already stored, already HMAC-verified, already deduplicated)
 
     subscription_id present:
-        -> classify_raw_event()        (classification/service.py, Day 2, reused as-is)
+        -> classify_raw_event()        (classification/service.py, reused as-is)
         -> orchestrate_recovery()      (recovery/orchestrator.py, reused as-is)
 
     subscription_id ABSENT, but payment_id + amount present (e.g. a
@@ -105,7 +105,7 @@ from recovery.revenue_schemas import RevenueRiskEventInput
 # insufficient_fund and the handful of other error_reason values
 # classification/rules.py recognizes -- all carried on `payment.failed`).
 # Other event types Razorpay may deliver (e.g. `subscription.activated`,
-# etc.) are stored (Day 1 behavior, unchanged) but never enter
+# etc.) are stored (webhook-receiver behavior, unchanged) but never enter
 # classification/orchestration.
 ORCHESTRATABLE_EVENT_TYPES = frozenset({"payment.failed"})
 

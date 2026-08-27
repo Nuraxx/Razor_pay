@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Day-13: launches the Adaptive Recovery dashboard.
+# Launches the Adaptive Recovery dashboard.
 #
 #   ./scripts/run_dashboard.sh
 #

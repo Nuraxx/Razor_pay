@@ -1,11 +1,11 @@
 """
-Day-7 within-event ranking model.
+Within-event ranking model.
 
     ./venv/bin/python model/train_ranking_model.py
 
-ROOT CAUSE THIS FIXES (see README "Day 7: diagnosis" for the full writeup,
-reproducible via model/diagnose_ranking_failure.py): Day 6's candidate-aware
-CatBoost was trained with pointwise log-loss on POOLED rows and selected by
+ROOT CAUSE THIS FIXES (see model/diagnose_ranking_failure.py for the full
+writeup, reproducible directly): the candidate-aware model's CatBoost was
+trained with pointwise log-loss on POOLED rows and selected by
 POOLED validation AUC. `hours_from_failure` alone captured 93.3% of its
 feature importance -- mostly a proxy for "does this candidate's own
 scheduled time still leave room to recover within 14 days" -- which crowded
@@ -38,8 +38,9 @@ At inference time, an event's 5 candidates are scored via a round-robin
 tournament: for each candidate, its score is the mean predicted "beats"
 probability against the other 4 candidates of the SAME event
 (`score_candidates_for_event`). This produces a bounded [0,1] per-candidate
-score, directly usable wherever Day 6's pointwise probability was used --
-including `policy/recovery_policy.py::decide_candidate_aware`, unchanged.
+score, directly usable wherever the candidate-aware model's pointwise
+probability was used -- including
+`policy/recovery_policy.py::decide_candidate_aware`, unchanged.
 """
 from __future__ import annotations
 
@@ -112,8 +113,9 @@ def build_pairwise_dataset(Z: np.ndarray, y: np.ndarray, event_ids: np.ndarray) 
     formed across two different event_ids -- each event's 5 candidates form
     one ranking group, exactly as the brief requires. Events where every
     candidate shares the same label contribute zero pairs (no informative
-    comparison exists) -- see README "Day 7: diagnosis" for how large that
-    fraction is and why it is not the dominant driver of Day 6's failure.
+    comparison exists) -- see model/diagnose_ranking_failure.py for how
+    large that fraction is and why it is not the dominant driver of the
+    candidate-aware model's failure.
     """
     y = np.asarray(y)
     event_ids = np.asarray(event_ids)

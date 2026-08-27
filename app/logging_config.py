@@ -1,7 +1,7 @@
 """
 Structured application logging.
 
-Kept deliberately simple for Day 1 (stdlib logging, no external observability
+Kept deliberately simple (stdlib logging, no external observability
 stack) — the audit_log table is the observability surface that actually
 matters for this project's judging criteria; this logger is for operational
 visibility while developing (e.g. watching signature checks in the terminal).

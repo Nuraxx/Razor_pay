@@ -1,21 +1,22 @@
 """
-Day-6 candidate-level feature selection + preprocessing.
+Candidate-level feature selection + preprocessing.
 
 Mirrors model/preprocessing.py's structure and every one of its leakage
 safeguards, extended with candidate-time features so the model can condition
 on WHICH retry candidate is being scored, not just the failure context.
 
 No new data/processed/*.csv files are written -- the candidate-level table
-(5 rows per failure event) is built at load time by joining the raw tables
-Day 3 and Day 6 already produce:
+(5 rows per failure event) is built at load time by joining raw tables the
+synthetic dataset generator and the counterfactual layer already produce:
 
-    data/raw/counterfactual_outcomes.csv   (Day 6 -- target + candidate_type)
-    data/raw/retry_candidates.csv          (Day 3 -- candidate_datetime, offset/alignment)
-    data/raw/failure_events.csv            (Day 3 -- failure-time/customer features)
-    data/raw/subscriptions.csv             (Day 3 -- leakage-safe subscription columns + split)
+    data/raw/counterfactual_outcomes.csv   (counterfactual layer -- target + candidate_type)
+    data/raw/retry_candidates.csv          (synthetic dataset -- candidate_datetime, offset/alignment)
+    data/raw/failure_events.csv            (synthetic dataset -- failure-time/customer features)
+    data/raw/subscriptions.csv             (synthetic dataset -- leakage-safe subscription columns + split)
 
-Every fit happens on the training split only, exactly like Day 4 -- see
-`load_candidate_splits` and the leakage tests in tests/test_candidate_model.py.
+Every fit happens on the training split only, exactly like the calibrated
+failure-time-only model -- see `load_candidate_splits` and the leakage
+tests in tests/test_candidate_model.py.
 """
 from __future__ import annotations
 
@@ -40,9 +41,9 @@ RAW_DIR = PROJECT_ROOT / "data" / "raw"
 
 TARGET_COLUMN = "recovered_within_14d"
 
-# Candidate-action features (Day 6, section 2 of the brief) -- everything
-# about WHEN/WHICH candidate, layered on top of Day 4's unchanged
-# failure-time/customer features (NUMERIC_FEATURES / CATEGORICAL_FEATURES /
+# Candidate-action features (section 2 of the brief) -- everything
+# about WHEN/WHICH candidate, layered on top of the calibrated model's
+# unchanged failure-time/customer features (NUMERIC_FEATURES / CATEGORICAL_FEATURES /
 # BOOLEAN_FEATURES, imported above, reused verbatim).
 CANDIDATE_NUMERIC_FEATURES = ["hours_from_failure", "candidate_day_of_month", "candidate_days_to_payday"]
 CANDIDATE_CATEGORICAL_FEATURES = ["candidate_type", "candidate_day_of_week"]
@@ -57,7 +58,7 @@ FEATURE_COLUMNS = ALL_NUMERIC_FEATURES + ALL_CATEGORICAL_FEATURES + ALL_BOOLEAN_
 # Every column present in the joined candidate-level table that is NOT a
 # model feature, with the reason -- same convention as
 # model/preprocessing.py::EXCLUDED_COLUMNS, reviewed explicitly per the
-# Day-6 brief section 3 ("avoid post-treatment leakage").
+# brief section 3 ("avoid post-treatment leakage").
 EXCLUDED_COLUMNS = {
     "counterfactual_id": "identifier -- unique per row, not predictive.",
     "event_id": "identifier -- same failure event repeats across its 5 candidate rows; not a feature.",
@@ -67,7 +68,7 @@ EXCLUDED_COLUMNS = {
         "candidate_day_of_month / candidate_day_of_week / candidate_days_to_payday / "
         "candidate_is_payday_aligned / candidate_is_month_end_aligned / hours_from_failure columns."
     ),
-    "failure_timestamp": "same reasoning as Day 4 -- captured by day_of_month / days_to_nearest_payday_window / tenure_days.",
+    "failure_timestamp": "same reasoning as the calibrated model -- captured by day_of_month / days_to_nearest_payday_window / tenure_days.",
     "signup_date": "raw high-cardinality timestamp; captured by tenure_days.",
     "monthly_amount": "exact duplicate of `amount` in this dataset -- redundant.",
     "error_reason": "constant ('insufficient_fund') across this dataset -- zero variance.",
@@ -98,13 +99,13 @@ def build_candidate_level_dataset_from_tables(
 ) -> pd.DataFrame:
     """Pure join logic, no I/O -- separated out from build_candidate_level_dataset()
     so tests can exercise it against a small in-memory dataset (see
-    tests/test_candidate_model.py), the same pattern Day 4's
+    tests/test_candidate_model.py), the same pattern
     tests/test_model_pipeline.py uses via data.generate_synthetic_dataset.generate_dataset().
 
     One row per (failure event, candidate_type) -- 5x failure_events'
     row count. Includes `split`, inherited from the underlying subscription
-    exactly like Day 3's processed splits (a subscription and every one of
-    its candidate rows lands in exactly one split)."""
+    exactly like the synthetic dataset's processed splits (a subscription
+    and every one of its candidate rows lands in exactly one split)."""
     candidate_cols = retry_candidates[
         ["event_id", "candidate_type", "offset_hours_from_failure", "is_payday_aligned", "is_month_end_aligned"]
     ].rename(columns={"offset_hours_from_failure": "hours_from_failure"})
@@ -159,7 +160,7 @@ def select_features_and_target(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Serie
 
 # PriorSelfResolvedImputer is reused unchanged from model/preprocessing.py --
 # `prior_if_self_resolved_rate` is a failure-time feature, identical meaning
-# and identical missingness pattern here as in Day 4 (first-time failures
+# and identical missingness pattern here as in the calibrated model (first-time failures
 # have no prior history regardless of which candidate is being scored).
 ALL_NUMERIC_FEATURES_WITH_FLAG = ALL_NUMERIC_FEATURES + ALL_BOOLEAN_FEATURES + ["prior_if_self_resolved_rate_missing"]
 

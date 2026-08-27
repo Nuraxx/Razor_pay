@@ -1,14 +1,15 @@
 """
-Day-6 candidate-aware model + counterfactual policy evaluation.
+Candidate-aware model + counterfactual policy evaluation.
 
     ./venv/bin/python evaluation/evaluate_counterfactual_policy.py
 
 "SYNTHETIC COUNTERFACTUAL EVALUATION" -- every number in this script's
 output is computed against data/raw/counterfactual_outcomes.csv, a
 hand-designed simulation (see data/generate_counterfactual_dataset.py). It
-is legitimate WITHIN that synthetic environment -- Day 6 finally has a real
-outcome for every candidate, not just the one that was observed -- but it
-does not measure real Razorpay recovery performance. See README "Day 6".
+is legitimate WITHIN that synthetic environment -- the counterfactual layer
+finally has a real outcome for every candidate, not just the one that was
+observed -- but it does not measure real Razorpay recovery performance. See
+README §16.
 
 Three things this script does, on the untouched candidate-level test split:
 
@@ -23,8 +24,9 @@ Three things this script does, on the untouched candidate-level test split:
    the exact same `decide_candidate_aware()` used for real decisions).
 3. MONEY metrics for five policies (No Recovery / Fixed Retry / Rule-Based /
    AI-Assisted / Oracle) using the REALIZED counterfactual outcome for
-   whichever candidate each policy selects -- the one thing Day 5 could not
-   honestly do (see evaluation/evaluate_policy.py's module docstring).
+   whichever candidate each policy selects -- the one thing the earlier
+   heuristic-scoring evaluation could not honestly do (see
+   evaluation/evaluate_policy.py's module docstring).
 """
 from __future__ import annotations
 
@@ -52,7 +54,7 @@ from policy.recovery_policy import NO_ACTION, decide_candidate_aware
 from policy.retry_candidates import CANDIDATE_TYPES, Candidate, generate_candidates
 from policy.scoring import (
     CANDIDATE_ARTIFACTS_DIR,
-    Day4ModelUnavailable,
+    ScoringModelUnavailable,
     load_candidate_aware_model,
     predict_candidate_aware_recovery_probability,
 )
@@ -140,9 +142,9 @@ def _row_to_candidate(row: pd.Series) -> Candidate:
 
 
 def _check_guardrail_consistency(test_df: pd.DataFrame) -> int:
-    """Sanity check (Day-6 brief section 10 territory): decide_candidate_aware()
+    """Sanity check (this module's own brief section 10 territory): decide_candidate_aware()
     regenerates its own candidates internally (policy/retry_candidates.py's
-    fixed offsets), rather than reading test_df's actual (Day-3, lightly
+    fixed offsets), rather than reading test_df's actual (lightly
     jittered) candidate_datetime values. Confirms that never flips a
     candidate's validity (after-failure / within-14-day-horizon) for this
     test set, so reusing decide_candidate_aware() unmodified is safe."""
@@ -159,7 +161,7 @@ def _check_guardrail_consistency(test_df: pd.DataFrame) -> int:
 def evaluate_events(test_df: pd.DataFrame, predicted_probabilities: pd.Series) -> pd.DataFrame:
     """One row per failure event with every policy's selection, realized
     counterfactual outcome, and the ranking quantities (regret, top-1/top-2)
-    needed for sections 6 and 7 of the Day-6 brief."""
+    needed for sections 6 and 7 of this module's own brief."""
     df = test_df.copy()
     df["predicted_recovery_probability"] = predicted_probabilities
 
@@ -221,7 +223,7 @@ def evaluate_events(test_df: pd.DataFrame, predicted_probabilities: pd.Series) -
         record["oracle_expected_value"] = oracle_ev
         record["ai_expected_value_at_latent_truth"] = ai_ev
 
-        # DIAGNOSTIC (see README "Day 6: a surprising finding"): pooled
+        # DIAGNOSTIC (see README §16 "a surprising finding"): pooled
         # ROC-AUC measures discrimination across ALL test rows, which mixes
         # between-event (context) and within-event (candidate) variance. It
         # says nothing about whether the model ranks the 5 candidates of a
@@ -312,7 +314,7 @@ def main() -> None:
         artifacts = load_all_candidate_artifacts()
     except FileNotFoundError as exc:
         raise SystemExit(
-            f"Day-6 candidate-aware model artifacts not found: {exc}\n"
+            f"Candidate-aware model artifacts not found: {exc}\n"
             "Run ./venv/bin/python model/train_candidate_model.py first."
         ) from exc
 

@@ -1,24 +1,26 @@
 """
-Day-6 synthetic counterfactual layer.
+Synthetic counterfactual layer.
 
-Day 3/5's dataset records exactly ONE observed outcome per failure event --
-whatever actually happened -- not what would have happened under each of
-the 5 candidate retry times. That meant Day 5 could score candidates but
-could never honestly claim one candidate *causes* higher recovery than
-another (see policy/scoring.py's module docstring and README "Day 5").
+The synthetic dataset generator's own dataset records exactly ONE observed
+outcome per failure event -- whatever actually happened -- not what would
+have happened under each of the 5 candidate retry times. That meant the
+candidate-scoring heuristic could score candidates but could never honestly
+claim one candidate *causes* higher recovery than another (see
+policy/scoring.py's module docstring and README §16).
 
 This module fixes that by generating a SEPARATE, ADDITIONAL outcome for
 every (failure event, candidate) pair -- 5 simulated counterfactual outcomes
 per event, one per candidate_type. It does not touch or regenerate
 data/raw/{subscriptions,failure_events,retry_candidates,recovery_outcomes}.csv
-(Day 3's original single-outcome mechanism, still used by Day 4/5) -- it
-reuses that exact same generation (same seed -> byte-identical subscriptions/
-failure_events/retry_candidates) and layers a new, independent random stream
-on top to produce data/raw/counterfactual_outcomes.csv.
+(the synthetic dataset generator's original single-outcome mechanism, still
+used downstream) -- it reuses that exact same generation (same seed ->
+byte-identical subscriptions/failure_events/retry_candidates) and layers a
+new, independent random stream on top to produce
+data/raw/counterfactual_outcomes.csv.
 
-THIS DATA IS SYNTHETIC, same disclaimer as Day 3 (see data/README.md). It is
-a hand-designed probabilistic model, not derived from real Razorpay
-transactions.
+THIS DATA IS SYNTHETIC, same disclaimer as the base dataset (see
+data/README.md). It is a hand-designed probabilistic model, not derived
+from real Razorpay transactions.
 
 Run:
     ./venv/bin/python data/generate_counterfactual_dataset.py
@@ -26,8 +28,8 @@ Run:
 Reproducibility: one additional numpy Generator, seeded at
 `seed + COUNTERFACTUAL_SEED_OFFSET` (default 42 + 5000), independent of the
 generator `generate_synthetic_dataset.generate_dataset()` uses internally --
-regenerating Day 3's tables is unaffected, and regenerating this layer with
-the same seed reproduces byte-identical output.
+regenerating the base dataset's tables is unaffected, and regenerating this
+layer with the same seed reproduces byte-identical output.
 """
 from __future__ import annotations
 
@@ -55,14 +57,14 @@ from data.generate_synthetic_dataset import (
 )
 
 COUNTERFACTUAL_SEED_OFFSET = 5000
-RECOVERY_HORIZON_DAYS = 14  # same "recovered_within_14d" definition as Day 3/4/5
+RECOVERY_HORIZON_DAYS = 14  # same "recovered_within_14d" definition as the rest of the pipeline
 
 # ---------------------------------------------------------------------------
 # Candidate-timing causal mechanism, hidden-archetype-dependent (generation
 # only -- see module docstring in data/generate_synthetic_dataset.py for why
 # this is legitimate at generation time but must never reach the model).
 #
-# Sized to satisfy the Day-6 brief's qualitative requirements directly:
+# Sized to satisfy this module's own brief's qualitative requirements directly:
 #   - cash_strapped_cyclical: strong payday-alignment sensitivity
 #   - reliable: timing matters comparatively little (funds are usually there)
 #   - chronic_struggler: limited timing effect (mostly noise-driven)
@@ -133,8 +135,8 @@ def _counterfactual_recovery_logit(
 ) -> float:
     """Same shared-context terms as generate_synthetic_dataset._recovery_logit
     (archetype base rate, prior history, amount, exogenous conditions,
-    tenure), PLUS the candidate-timing term above that Day 3's single-outcome
-    mechanism never had a reason to include."""
+    tenure), PLUS the candidate-timing term above that the base dataset's
+    single-outcome mechanism never had a reason to include."""
     logit = ARCHETYPE_BASE_LOGIT[archetype]
     logit += _candidate_timing_logit_term(archetype, candidate_type, candidate_days_to_payday, candidate_is_month_end_aligned, hours_from_failure)
     if not np.isnan(prior_self_resolved_rate):
@@ -239,8 +241,8 @@ def write_counterfactual_outcomes(df: pd.DataFrame, output_dir: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Sanity checks (Day-6 brief section 10) -- archetype is used here for
-# reporting only, exactly as Day 3's own summarize_dataset() does; it is
+# Sanity checks (this module's own brief section 10) -- archetype is used here for
+# reporting only, exactly as the base generator's own summarize_dataset() does; it is
 # never written into a model-facing column.
 # ---------------------------------------------------------------------------
 
@@ -337,7 +339,7 @@ def validate_counterfactual_outcomes(cf: pd.DataFrame, failure_events: pd.DataFr
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate the Day-6 synthetic counterfactual outcomes layer.")
+    parser = argparse.ArgumentParser(description="Generate the synthetic counterfactual outcomes layer.")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--n-subscriptions", type=int, default=DEFAULT_N_SUBSCRIPTIONS)
     parser.add_argument("--output-dir", type=Path, default=Path(__file__).parent)

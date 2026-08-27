@@ -1,27 +1,28 @@
 """
-Day-8 latent-target model + policy evaluation.
+Latent-target model + policy evaluation.
 
     ./venv/bin/python evaluation/evaluate_latent_target_policy.py
 
-"SYNTHETIC COUNTERFACTUAL EVALUATION" -- same disclaimer as Day 6/7: every
-number here comes from data/raw/counterfactual_outcomes.csv, a
-hand-designed simulation. It does not measure real Razorpay recovery
-performance. `recovery_probability_latent` / `expected_recovery_value_latent`
-are SYNTHETIC BENCHMARK TARGETS this project's own generator authored --
-see model/latent_target_preprocessing.py's module docstring for the full
-A/B/C distinction. A production system has no such column.
+"SYNTHETIC COUNTERFACTUAL EVALUATION" -- same disclaimer as the earlier
+candidate-aware/ranking model evaluations: every number here comes from
+data/raw/counterfactual_outcomes.csv, a hand-designed simulation. It does
+not measure real Razorpay recovery performance. `recovery_probability_latent`
+/ `expected_recovery_value_latent` are SYNTHETIC BENCHMARK TARGETS this
+project's own generator authored -- see model/latent_target_preprocessing.py's
+module docstring for the full A/B/C distinction. A production system has no
+such column.
 
-Compares 8 policies (brief section 7, nothing from Day 6/7 deleted):
-Random, Fixed Retry, Rule-Based, Day-6 probability model, Day-7 pairwise
-ranking model, Day-8 Model A (predicts recovery_probability_latent), Day-8
-Model B (predicts expected_recovery_value_latent, the brief's PRIMARY
-target), Oracle.
+Compares 8 policies (brief section 7, nothing from the earlier model
+evaluations deleted): Random, Fixed Retry, Rule-Based, the candidate-aware
+probability model, the pairwise ranking model, Model A (predicts
+recovery_probability_latent), Model B (predicts expected_recovery_value_latent,
+the brief's PRIMARY target), Oracle.
 
 Four report sections (brief section 8), kept explicitly separate:
   A. Regression metrics (Model A/B only, vs. their own synthetic target)
   B. Ranking metrics (all policies, PRIMARY ground truth = expected_recovery_value_latent)
   C. Economic metrics (latent, synthetic -- "what the generator's own ground truth says")
-  D. Realized counterfactual metrics (the stochastic sampled outcome -- what Day 6/7 already reported)
+  D. Realized counterfactual metrics (the stochastic sampled outcome -- what the earlier model evaluations already reported)
 """
 from __future__ import annotations
 
@@ -32,8 +33,8 @@ import pandas as pd
 
 from classification.rules import classify
 from evaluation.ranking_metrics import ndcg_at_5, pairwise_concordant_pairs, reciprocal_rank, regret, top_k_accuracy, within_event_rank
-from model.candidate_preprocessing import prepare_for_catboost as day6_prepare_cb
-from model.candidate_preprocessing import select_features_and_target as day6_select
+from model.candidate_preprocessing import prepare_for_catboost as candidate_model_prepare_cb
+from model.candidate_preprocessing import select_features_and_target as select_candidate_probability_features
 from model.latent_target_preprocessing import (
     LATENT_PROBABILITY_COLUMN,
     LATENT_VALUE_COLUMN,
@@ -57,10 +58,10 @@ POLICY_NAMES = [
     "random_candidate",
     "fixed_retry",
     "rule_based",
-    "day6_probability_model",
-    "day7_ranking_model",
-    "day8_model_a_probability",
-    "day8_model_b_value",
+    "candidate_probability_model",
+    "ranking_model",
+    "model_a_probability",
+    "model_b_value",
     "oracle_policy",
 ]
 
@@ -91,13 +92,13 @@ def compute_regression_metrics(test_df: pd.DataFrame) -> dict:
 # ---------------------------------------------------------------------------
 
 def compute_all_scores(test_df: pd.DataFrame) -> dict[str, pd.Series]:
-    day6_model, day6_imputer = load_candidate_aware_model()
-    X6, _y = day6_select(test_df)
-    X6_imp = day6_imputer.transform(X6)
-    day6_scores = predict_candidate_aware_recovery_probability(X6_imp, day6_model, day6_imputer)
+    candidate_model, candidate_model_imputer = load_candidate_aware_model()
+    X6, _y = select_candidate_probability_features(test_df)
+    X6_imp = candidate_model_imputer.transform(X6)
+    candidate_probability_scores = predict_candidate_aware_recovery_probability(X6_imp, candidate_model, candidate_model_imputer)
 
-    day7_fitted = load_ranking_model()
-    day7_scores = predict_ranking_scores(test_df, day7_fitted)
+    ranking_model_fitted = load_ranking_model()
+    ranking_model_scores = predict_ranking_scores(test_df, ranking_model_fitted)
 
     model_a = load_latent_target_model("probability")
     Xa, _ya = select_features_and_target(test_df, "probability")
@@ -114,8 +115,8 @@ def compute_all_scores(test_df: pd.DataFrame) -> dict[str, pd.Series]:
     # architecture (score_candidate_with_model_probability) expects a
     # probability and multiplies by amount internally -- converting back via
     # /amount round-trips correctly (value = prob * amount => prob = value / amount)
-    # and lets Model B plug into the SAME unmodified policy code Model A,
-    # Day 6, and Day 7 already use. Clipped to [0,1] defensively: a
+    # and lets Model B plug into the SAME unmodified policy code Model A and
+    # the candidate-aware/ranking models already use. Clipped to [0,1] defensively: a
     # regressor's raw output is not guaranteed to stay in range.
     model_b_prob_equivalent = (model_b_value_scores / test_df["amount"]).clip(0.0, 1.0)
 
@@ -123,10 +124,10 @@ def compute_all_scores(test_df: pd.DataFrame) -> dict[str, pd.Series]:
     random_scores = pd.Series(rng.random(len(test_df)), index=test_df.index)
 
     return {
-        "day6_probability_model": day6_scores,
-        "day7_ranking_model": day7_scores,
-        "day8_model_a_probability": model_a_scores.clip(0.0, 1.0),
-        "day8_model_b_value": model_b_prob_equivalent,
+        "candidate_probability_model": candidate_probability_scores,
+        "ranking_model": ranking_model_scores,
+        "model_a_probability": model_a_scores.clip(0.0, 1.0),
+        "model_b_value": model_b_prob_equivalent,
         "random_candidate": random_scores,
         "oracle_policy": test_df[LATENT_PROBABILITY_COLUMN],
     }
@@ -259,7 +260,7 @@ def summarize_economic_metrics(events: pd.DataFrame) -> dict:
 
 def summarize_realized_metrics(events: pd.DataFrame) -> dict:
     """Section D: the STOCHASTIC, sampled counterfactual outcome -- what
-    Day 6/7 already reported. Kept explicitly separate from section C."""
+    the earlier model evaluations already reported. Kept explicitly separate from section C."""
     n_events = len(events)
     summary = {}
     for policy_name in POLICY_NAMES:

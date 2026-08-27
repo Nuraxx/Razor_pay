@@ -25,7 +25,7 @@ class Settings:
     APP_PORT: int = int(os.getenv("APP_PORT", "8000"))
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 
-    # Day 11 -- LLM-assisted communication layer (llm/). "mock" (default) makes
+    # LLM-assisted communication layer (llm/). "mock" (default) makes
     # zero network calls and needs no API key; the project runs fully offline
     # with this unset. "anthropic" requires ANTHROPIC_API_KEY; "gemini"
     # requires GEMINI_API_KEY. "ollama" requires no API key -- it talks to a

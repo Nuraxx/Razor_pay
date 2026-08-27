@@ -1,34 +1,34 @@
 """
-Day-10 improved fallback/abstention decision engine (policy-v4).
+policy-v4 improved fallback/abstention decision engine (policy-v4).
 
-DOES NOT retrain or replace Day-8 Model B, and does NOT delete or modify
-Day-9 (policy-v3, policy/decision_engine.py -- untouched, still fully
-supported, still the value of `PolicyDecision.decision_source == "day8_model_b"`
-etc for any Day-9 row). This module only changes the ABSTENTION/FALLBACK
+DOES NOT retrain or replace Model B, and does NOT delete or modify
+policy-v3 (policy-v3, policy/decision_engine.py -- untouched, still fully
+supported, still the value of `PolicyDecision.decision_source == "subscription_value_model"`
+etc for any policy-v3 row). This module only changes the ABSTENTION/FALLBACK
 LOGIC that sits on top of Model B's predictions.
 
-WHY (brief section "Day-9 finding" + this module's own diagnosis -- see
-evaluation/diagnose_day9_fallback.py and README "Day 10"): Day-9's fallback
+WHY (brief section "policy-v3 finding" + this module's own diagnosis -- see
+evaluation/diagnose_original_fallback_effect.py and README "policy-v4"): policy-v3's fallback
 question was "is Model B confident in its own #1 vs #2 pick?" (the gap
 between Model B's own top-2 net values). That question is blind to whether
 Rule-Based's candidate is actually any good -- it triggers a fallback any
 time Model B's top candidates are close together, even when ALL of them
 (including Rule-Based's pick) are close together because they are all
-similarly good, not because Model B is wrong. On the Day-9 test set this
+similarly good, not because Model B is wrong. On the policy-v3 test set this
 handed 41/60 events to Rule-Based, foregoing ~Rs1,599 of latent value Model B
 itself would have picked correctly.
 
-Day 10 asks a different, more relevant question once the margin gate
+policy-v4 asks a different, more relevant question once the margin gate
 triggers: "does Rule-Based's candidate look meaningfully BETTER than Model
 B's own top pick, ALSO according to Model B's own value predictions?" This
-reuses a value Day-9 already computed as a side effect (see Day-9's
+reuses a value policy-v3 already computed as a side effect (see policy-v3's
 `_try_rule_based_fallback`'s `known` lookup) and promotes it into the actual
 gating mechanism (brief section 3).
 
 Two independently validation-searched knobs, evaluated together in
 evaluation/evaluate_decision_engine_v4.py:
 
-  margin_threshold   -- same Day-9 concept (gap between Model B's own top-2
+  margin_threshold   -- same policy-v3 concept (gap between Model B's own top-2
                          *net* values). Still only gates WHETHER to even
                          consider deviating from Model B's own top pick;
                          it is NOT by itself the fallback decision.
@@ -40,7 +40,7 @@ evaluation/evaluate_decision_engine_v4.py:
 Four fallback modes (brief section 2B):
 
   ALWAYS_FALLBACK_WHEN_BELOW_MARGIN
-      Day-9's original behaviour, reimplemented here for a fair, apples-to-
+      policy-v3's original behaviour, reimplemented here for a fair, apples-to-
       apples comparison inside the same evaluation harness: below margin,
       always take Rule-Based's candidate (subject to it being valid and
       having positive net value).
@@ -64,7 +64,7 @@ attempts, candidate must be valid (after failure, within the 14-day
 horizon). The three-tier fail-closed structure is unchanged: Model B
 (primary) -> Rule-Based (secondary, now evidence-gated) -> NO_ACTION (final
 safety net). Every decision still records exactly which tier decided it, via
-the same `decision_source` vocabulary as Day 9.
+the same `decision_source` vocabulary as policy-v3.
 
 NOTE ON COSTS: with the current synthetic cost model (policy/costs.py), all
 5 candidate types share the same `retry_cost` + `operational_cost`, so
@@ -121,13 +121,13 @@ FallbackMode = Literal[
 
 # Chosen via validation-only search over 108 (margin_threshold, fallback_mode,
 # fallback_advantage_threshold) combinations -- see
-# evaluation/evaluate_decision_engine_v4.py::select_day10_configuration_on_validation
-# and README "Day 10: configuration selection". Frozen here; never re-tuned
+# evaluation/evaluate_decision_engine_v4.py::select_validation_configuration
+# and README "policy-v4: configuration selection". Frozen here; never re-tuned
 # against test results.
 #
 # ECONOMIC-CORRECTION FINDING (final pre-submission audit -- see README "Day
 # 10: economic correction" and evaluation/reports/decision_engine_v4_evaluation.json):
-# the ORIGINAL Day-10 search picked ALWAYS_FALLBACK_WHEN_BELOW_MARGIN at a
+# the ORIGINAL policy-v4 search picked ALWAYS_FALLBACK_WHEN_BELOW_MARGIN at a
 # Rs5 margin because it scored highest on total LATENT value
 # (Rs18609.15 vs Rs18258.62 for Model-B-alone) -- a smooth, low-variance
 # proxy (`expected_recovery_value_latent = recovery_probability_latent *
@@ -146,7 +146,7 @@ FallbackMode = Literal[
 # confirming this is a real property of the mechanism on this population,
 # not test-set noise. The default below has been corrected accordingly.
 #
-# STRUCTURAL FINDING (verified, not a bug -- see README "Day 10: why the
+# STRUCTURAL FINDING (verified, not a bug -- see README "policy-v4: why the
 # evidence-based modes never fire"): KEEP_MODEL_WHEN_BETTER_THAN_RULE and
 # KEEP_MODEL_UNLESS_RULE_HAS_CLEAR_ADVANTAGE scored EXACTLY Rs18258.62 (=
 # zero fallbacks) across all 90 margin x advantage combinations tested for
@@ -155,7 +155,7 @@ FallbackMode = Literal[
 # already scores, so Model B's own top pick (the argmax over that whole set)
 # can never have a LOWER net value than Model B's own estimate for
 # Rule-Based's candidate -- there is nothing for a "clear advantage" to ever
-# detect. Both modes therefore ALWAYS collapse to "day8_model_b_alone"'s
+# detect. Both modes therefore ALWAYS collapse to "model_b_alone"'s
 # selections in this architecture, regardless of margin_threshold or
 # fallback_advantage_threshold: they can never do WORSE than Model B alone,
 # by construction. That safety property is exactly why
@@ -281,7 +281,7 @@ def decide_engine_v4(
     if not valid_candidates:
         return na("blocked_no_valid_candidates: every candidate failed validation", invalid_scores)
 
-    # --- Tier 1: PRIMARY -- Day-8 Model B (same interaction code as v3) ---
+    # --- Tier 1: PRIMARY -- Model B (same interaction code as v3) ---
     try:
         loaded_model = _load_model_safely(model)
         model_values = _predict_recovery_values(valid_candidates, amount, failure_context, loaded_model)
@@ -397,7 +397,7 @@ def build_retry_schedule_from_decision(decision: Decision) -> tuple[list[str], l
     made exactly ONE attempt per event. On held-out TEST this is the single
     largest remaining source of the deployed policy's gap to Fixed Retry
     (see policy/decision_engine_v4.py's ECONOMIC-CORRECTION FINDING above and
-    README "Day 10: economic correction" / "Day 10: multi-attempt
+    README "policy-v4: economic correction" / "policy-v4: multi-attempt
     persistence").
 
     HOW: slot 1 is exactly `decision.selected_candidate_type` -- the normal
@@ -443,7 +443,7 @@ def _rule_based_only(
 ) -> Decision:
     """Model B genuinely unavailable/errored (not merely ambiguous) -- Tier
     2, trusting Rule-Based on its own merits since no Model-B value exists
-    for any candidate. Identical semantics to Day-9's equivalent path."""
+    for any candidate. Identical semantics to policy-v3's equivalent path."""
     valid_types = {c.candidate_type: c for c in valid_candidates}
     fallback_type = rule_based_baseline(event_id, subscription_id, failure_timestamp, amount, classification_bucket, 0.0)["selected_candidate_type"]
 
@@ -481,7 +481,7 @@ def decide_for_failure_event_engine_v4(
     model: dict | None = None,
 ) -> tuple[PolicyDecision, bool]:
     """DB-aware wrapper -- same idempotency (by event_id, shared across
-    every policy_version) and max-retry-attempts accounting as Day 9's
+    every policy_version) and max-retry-attempts accounting as policy-v3's
     equivalent. Persists a policy_decisions row plus an audit_log row for
     every call, including NO_ACTION, blocked, and duplicate ones."""
     existing = db.query(PolicyDecision).filter(PolicyDecision.event_id == event_id).first()

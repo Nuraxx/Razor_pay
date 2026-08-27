@@ -1,22 +1,23 @@
 """
-Day-7 ranking-model feature selection.
+Ranking-model feature selection.
 
-Reuses Day 6's join logic (model/candidate_preprocessing.py::build_candidate_level_dataset_from_tables)
+Reuses the candidate-aware model's join logic (model/candidate_preprocessing.py::build_candidate_level_dataset_from_tables)
 unchanged -- no new raw tables, no re-derivation of the candidate-level
-join. The only thing that differs is FEATURE_COLUMNS: the Day-7 brief
-(section 5) specifies an explicit feature list that excludes the 3
-distractor columns Day 4/6 carried along (app_version, device_build,
-ui_theme) -- honored literally here rather than silently reusing Day 6's
-broader list, since a ranking model with already-weak within-group signal
-benefits from not spending capacity on columns already proven non-predictive.
+join. The only thing that differs is FEATURE_COLUMNS: this module's own
+brief (section 5) specifies an explicit feature list that excludes the 3
+distractor columns earlier models carried along (app_version, device_build,
+ui_theme) -- honored literally here rather than silently reusing the
+candidate-aware model's broader list, since a ranking model with already-weak
+within-group signal benefits from not spending capacity on columns already
+proven non-predictive.
 
-Day 6's model/candidate_preprocessing.py is otherwise completely untouched
--- this module only adds a narrower feature view on top of the same table.
+model/candidate_preprocessing.py is otherwise completely untouched -- this
+module only adds a narrower feature view on top of the same table.
 """
 from __future__ import annotations
 
 from model.candidate_preprocessing import (
-    EXCLUDED_COLUMNS as _DAY6_EXCLUDED_COLUMNS,
+    EXCLUDED_COLUMNS as _CANDIDATE_MODEL_EXCLUDED_COLUMNS,
     PriorSelfResolvedImputer,
     RAW_DIR,
     TARGET_COLUMN,
@@ -49,13 +50,14 @@ ALL_BOOLEAN_FEATURES = EVENT_BOOLEAN_FEATURES + CANDIDATE_BOOLEAN_FEATURES
 
 FEATURE_COLUMNS = ALL_NUMERIC_FEATURES + ALL_CATEGORICAL_FEATURES + ALL_BOOLEAN_FEATURES
 
-# Distractors and everything Day 6 already excludes (post-outcome fields,
-# hidden archetype, identifiers, split) apply unchanged here too -- see
-# model/candidate_preprocessing.py::EXCLUDED_COLUMNS for the full reasoning.
-EXCLUDED_COLUMNS = dict(_DAY6_EXCLUDED_COLUMNS)
+# Distractors and everything the candidate-aware model already excludes
+# (post-outcome fields, hidden archetype, identifiers, split) apply
+# unchanged here too -- see model/candidate_preprocessing.py::EXCLUDED_COLUMNS
+# for the full reasoning.
+EXCLUDED_COLUMNS = dict(_CANDIDATE_MODEL_EXCLUDED_COLUMNS)
 EXCLUDED_COLUMNS.update(
     {
-        "app_version": "distractor -- proven non-predictive (Day 4/6); explicitly not in the Day-7 brief's feature list.",
+        "app_version": "distractor -- proven non-predictive by earlier models; explicitly not in this module's own brief's feature list.",
         "device_build": "distractor -- same reason as app_version.",
         "ui_theme": "distractor -- same reason as app_version.",
     }
@@ -64,7 +66,7 @@ EXCLUDED_COLUMNS.update(
 
 def select_features_and_target(df):
     """Same shape as model/candidate_preprocessing.py::select_features_and_target,
-    restricted to the Day-7 feature list."""
+    restricted to this module's own feature list."""
     X = df[FEATURE_COLUMNS].copy()
     for col in ALL_BOOLEAN_FEATURES:
         X[col] = X[col].astype(int)

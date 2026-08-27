@@ -1,5 +1,5 @@
 """
-Day-13 dashboard tests: data loaders (missing-file handling), formatting,
+Dashboard tests: data loaders (missing-file handling), formatting,
 status mapping, event/audit loading, no-secrets-in-UI-data, demo scenario
 execution, and that the app itself launches (imports + runs) cleanly in
 offline/mock mode. Uses `streamlit.testing.v1.AppTest` to actually execute
@@ -186,7 +186,7 @@ def test_derive_final_status_matches_orchestrator_precedence():
     row_no_action = pd.Series({"selected_candidate_type": "NO_ACTION", "communication_action": "skipped", "decision_source": "no_action"})
     assert data._derive_final_status(row_no_action) == "NO_ACTION"
 
-    row_blocked_comm = pd.Series({"selected_candidate_type": "payday_window", "communication_action": "blocked", "decision_source": "day8_model_b"})
+    row_blocked_comm = pd.Series({"selected_candidate_type": "payday_window", "communication_action": "blocked", "decision_source": "subscription_value_model"})
     assert data._derive_final_status(row_blocked_comm) == "COMMUNICATION_BLOCKED"
 
     row_policy_fallback = pd.Series({"selected_candidate_type": "payday_window", "communication_action": "sent", "decision_source": "rule_based_fallback"})
@@ -368,11 +368,11 @@ def test_render_statistical_significance_section_with_synthetic_report():
     report = {
         "realized_counterfactual": {
             "fixed_retry": {"recovery_rate": 0.80, "total_recovered_rs": 21854.10},
-            "day10_improved_fallback": {"recovery_rate": 0.70, "total_recovered_rs": 19997.23, "incremental_rs_vs_fixed_retry": -1856.87},
+            "improved_fallback_policy": {"recovery_rate": 0.70, "total_recovered_rs": 19997.23, "incremental_rs_vs_fixed_retry": -1856.87},
         },
         "statistical_tests": {
             "population": {"n_events": 60, "held_out_split": "test"},
-            "mcnemar": {"policy_a": "day10_improved_fallback", "policy_b": "fixed_retry", "only_a_recovered": 3, "only_b_recovered": 9, "p_value": 0.146, "method": "exact_binomial"},
+            "mcnemar": {"policy_a": "improved_fallback_policy", "policy_b": "fixed_retry", "only_a_recovered": 3, "only_b_recovered": 9, "p_value": 0.146, "method": "exact_binomial"},
             "bootstrap_ci": {"point_estimate": -1856.87, "lower_bound": -4878.20, "upper_bound": 1295.62, "confidence_level": 0.95, "n_resamples": 10000, "seed": 42},
         },
     }
@@ -385,7 +385,7 @@ def test_render_economics_section_with_synthetic_report():
     report = {
         "economics": {
             "fixed_retry": {"recovered_gmv": 21854.10, "intervention_cost": 300.0, "razorpay_fee_take": 515.76, "net_recovery_value": 21038.34},
-            "day10_improved_fallback": {"recovered_gmv": 19997.23, "intervention_cost": 300.0, "razorpay_fee_take": 471.93, "net_recovery_value": 19225.30},
+            "improved_fallback_policy": {"recovered_gmv": 19997.23, "intervention_cost": 300.0, "razorpay_fee_take": 471.93, "net_recovery_value": 19225.30},
         }
     }
     app.render_economics_section(report)  # must not raise
@@ -463,7 +463,7 @@ def _seed_live_event(
     db.flush()
     policy = PolicyDecision(
         event_id=failure.id, subscription_id=subscription_id, selected_candidate_type=selected_candidate_type,
-        policy_version="v4", decision_reason="test seed", decision_source="day8_model_b", classification_bucket=classification_bucket,
+        policy_version="v4", decision_reason="test seed", decision_source="subscription_value_model", classification_bucket=classification_bucket,
     )
     db.add(policy)
     db.add(AuditLog(raw_event_id=raw.id, failure_event_id=failure.id, action="webhook_received_and_stored", actor="system"))
@@ -859,7 +859,7 @@ def test_get_live_pipeline_snapshot_reads_every_stage_from_real_rows(live_db_ses
     assert snapshot["error_reason"] == "insufficient_fund"
     assert snapshot["classification_bucket"] == "retryable_soft"
     assert snapshot["selected_candidate_type"] == "payday_window"
-    assert snapshot["decision_source"] == "day8_model_b"
+    assert snapshot["decision_source"] == "subscription_value_model"
     assert snapshot["compliance_display"] == "ALLOWED"
     assert snapshot["llm_provider"] == "ollama"
     assert snapshot["llm_model"] == "qwen3:14b"

@@ -1,5 +1,5 @@
 """
-Day-4 probability calibration.
+Probability calibration.
 
 Both sigmoid (Platt) and isotonic calibrators are fit -- each using ONLY the
 validation split, via an already-trained (train-only) CatBoost model frozen

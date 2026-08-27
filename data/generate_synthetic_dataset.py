@@ -1,9 +1,9 @@
 """
-Day-3 synthetic dataset generator.
+Synthetic dataset generator.
 
 Razorpay Subscriptions -> insufficient_fund failures -> retry candidates ->
 probabilistic recovery outcome. Produces the raw event tables plus a
-leakage-safe train/validation/test split, ready for Day 4/5 model work.
+leakage-safe train/validation/test split, ready for downstream model work.
 
 THIS DATA IS SYNTHETIC. It is generated from a hand-designed probabilistic
 model (see _recovery_logit below), not from real Razorpay transactions. It
@@ -382,7 +382,7 @@ def generate_failure_events_and_outcomes(
 
 # ---------------------------------------------------------------------------
 # Retry candidates -- descriptive only, no outcome/label (retry-time
-# selection is explicitly out of scope for Day 3).
+# selection is explicitly out of scope for this generator).
 # ---------------------------------------------------------------------------
 
 def generate_retry_candidates(rng: np.random.Generator, failure_events: pd.DataFrame) -> pd.DataFrame:
@@ -694,7 +694,7 @@ def validate_dataset(dfs: dict[str, pd.DataFrame]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate the Day-3 synthetic recovery dataset.")
+    parser = argparse.ArgumentParser(description="Generate the synthetic recovery dataset.")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--n-subscriptions", type=int, default=DEFAULT_N_SUBSCRIPTIONS)
     parser.add_argument("--output-dir", type=Path, default=Path(__file__).parent)

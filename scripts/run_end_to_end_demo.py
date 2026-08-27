@@ -1,13 +1,13 @@
 """
-Day-12 end-to-end demo CLI, extended in the FIX pass to also demonstrate
+End-to-end demo CLI, extended in the FIX pass to also demonstrate
 FIX #1 (promise-to-pay override) and FIX #2 (webhook -> automatic
 orchestration):
 
     EVENT -> CLASSIFICATION -> POLICY DECISION -> COMPLIANCE -> PAYMENT ACTION
     -> LLM COMMUNICATION -> FINAL RESULT -> AUDIT TRAIL
 
-Runs fully offline: synthetic events, the real Day-8/Day-10 trained model
-artifact, deterministic compliance, and the Day-11 mock LLM provider (no
+Runs fully offline: synthetic events, the real trained Model B / policy-v4
+artifact, deterministic compliance, and the mock LLM provider (no
 ANTHROPIC_API_KEY needed). No real payment retry or real message send is
 ever attempted, and no real Razorpay HTTP call is made anywhere below --
 scenario 5's "webhook" is a signed, in-process HTTP request to this
@@ -86,7 +86,7 @@ def _print_flow(db, result, event, title: str) -> None:
     print(f"  bucket={result.classification_bucket!r} confidence={result.classification_confidence}")
     print("  |")
     print("  v")
-    print("POLICY DECISION (Day-10 policy-v4, unmodified)")
+    print("POLICY DECISION (policy-v4 policy-v4, unmodified)")
     print(f"  selected_candidate_type={result.original_candidate_type!r} decision_source={result.decision_source!r}")
     print(f"  policy_version={result.policy_version!r}")
     if result.promise_to_pay_id is not None:
@@ -106,7 +106,7 @@ def _print_flow(db, result, event, title: str) -> None:
     print(f"  payment_action={result.payment_action!r}")
     print("  |")
     print("  v")
-    print("LLM COMMUNICATION (Day-11, mock provider)")
+    print("LLM COMMUNICATION (mock provider)")
     print(f"  communication_action={result.communication_action!r} llm_task_name={result.llm_task_name!r} llm_success={result.llm_success}")
     print("  |")
     print("  v")
@@ -199,8 +199,8 @@ def main() -> None:
     _print_flow(db3, result3, event3, "SCENARIO 3 (continued): orchestration with the promise applied")
 
     # --- Scenario 4: LLM failure flow ------------------------------------
-    # amount=2999 is chosen so the REAL Day-10 model confidently selects via
-    # its primary tier (decision_source="day8_model_b", not policy's own
+    # amount=2999 is chosen so the REAL policy-v4 model confidently selects via
+    # its primary tier (decision_source="subscription_value_model", not policy's own
     # fallback) -- isolating the LLM failure as the one thing going wrong in
     # this scenario, so final_status lands on LLM_FALLBACK specifically
     # rather than being masked by POLICY_FALLBACK (both are legitimate,

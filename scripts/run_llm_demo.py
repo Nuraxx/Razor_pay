@@ -1,7 +1,7 @@
 """
-Day-11 demo CLI: shows the full flow --
+Demo CLI: shows the full flow --
 
-    failure_event -> classification -> Day-8 Model B / policy-v4
+    failure_event -> classification -> Model B / policy-v4
     -> selected recovery action -> LLM communication tasks
     -> structured outputs -> audit log
 
@@ -87,11 +87,11 @@ def main() -> None:
     _print_header("1. Input recovery event")
     print(json.dumps({k: v for k, v in DEMO_EVENT.items() if k != "failure_context"}, indent=2, default=str))
 
-    _print_header("2. Classification (deterministic, Day 2)")
+    _print_header("2. Classification (deterministic)")
     classification = classify(None, DEMO_EVENT["error_reason"])
     print(f"classification_bucket = {classification.bucket!r} (confidence={classification.confidence})")
 
-    _print_header("3. Selected policy action (Day-8 Model B + policy-v4, Day 10 -- LLM NOT involved)")
+    _print_header("3. Selected policy action (Model B + policy-v4 -- LLM NOT involved)")
     model = load_latent_target_model("value")
     decision = decide_engine_v4(
         DEMO_EVENT["event_id"], DEMO_EVENT["subscription_id"], DEMO_EVENT["failure_timestamp"], DEMO_EVENT["amount"],
@@ -152,13 +152,13 @@ def main() -> None:
     if report_path.exists():
         with open(report_path) as f:
             report_summary = json.load(f)
-        print(f"  (using real Day-10 evaluation report: {report_path})")
+        print(f"  (using real policy-v4 evaluation report: {report_path})")
     else:
         report_summary = {"label": "SYNTHETIC COUNTERFACTUAL EVALUATION -- demo placeholder, no report file found on disk"}
-        print("  (no Day-10 report found on disk -- using a placeholder summary)")
+        print("  (no policy-v4 report found on disk -- using a placeholder summary)")
 
     result3, invocation3 = generate_batch_explanation_and_log(
-        db, batch_id="day10_test_set_evaluation_demo", report_summary=report_summary,
+        db, batch_id="policy_v4_test_set_evaluation_demo", report_summary=report_summary,
     )
     print(f"  provider={result3.provider} success={result3.success} error_type={result3.error_type}")
     print(f"  explanation_text: {result3.structured_result['explanation_text']}")

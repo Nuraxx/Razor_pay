@@ -1,10 +1,10 @@
 """
-Day-5 hard guardrails -- deterministic, no LLM, no ML. Shared by the main
+Hard guardrails -- deterministic, no LLM, no ML. Shared by the main
 AI-assisted policy (policy/recovery_policy.py) and the two non-trivial
 baselines (policy/baselines.py); the "No Recovery" baseline needs none of
 this since it never selects an action.
 
-Guardrail -> Day-5 brief section 7 requirement:
+Guardrail -> brief section 7 requirement:
   ALLOWED_CLASSIFICATION_BUCKET check  -> "no action when classification is
       not retryable_soft" AND "no action after a cancellation state"
       (customer_cancelled is itself a cancellation state -- one check covers

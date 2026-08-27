@@ -1,11 +1,11 @@
 """
-Day-7 policy integration tests: the Day-7 ranking model's scores flow into
+Policy integration tests: the ranking model's scores flow into
 the SAME `policy/recovery_policy.py::decide_candidate_aware` /
-`decide_for_failure_event_candidate_aware` Day 6 already built and tested
-(tests/test_counterfactual_policy.py) -- no new policy code exists for
-Day 7 by design (see README "Day 7: policy integration"). These tests
-confirm that composition actually works end-to-end with REAL ranking-model
-scores, and that every Day-5 guardrail still applies.
+`decide_for_failure_event_candidate_aware` the candidate-aware model already
+built and tested (tests/test_counterfactual_policy.py) -- no new policy code
+exists for the ranking model by design. These tests confirm that composition
+actually works end-to-end with REAL ranking-model scores, and that every
+guardrail still applies.
 """
 import numpy as np
 import pytest
@@ -56,8 +56,8 @@ def ranking_fitted(candidate_splits):
 def one_event_scores(candidate_splits, ranking_fitted):
     """Real ranking-model scores for one held-out test event -- not a
     hand-crafted toy dict, so this exercises the true score distribution
-    (which can be close together, unlike Day-6's tests' deliberately
-    separated toy probabilities)."""
+    (which can be close together, unlike the candidate-aware model's tests'
+    deliberately separated toy probabilities)."""
     _train, _val, test_df = candidate_splits
     scores = predict_ranking_scores(test_df, ranking_fitted)
     test_df = test_df.assign(_score=scores)

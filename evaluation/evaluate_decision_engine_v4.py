@@ -1,8 +1,8 @@
 """
-Day-10 evaluation: validation-only search over (margin_threshold,
+policy-v4 evaluation: validation-only search over (margin_threshold,
 fallback_mode, fallback_advantage_threshold), then a single frozen test-set
-run comparing 6 policies (Fixed Retry, Rule-Based, Model B alone, Day-9,
-Day-10, Oracle).
+run comparing 6 policies (Fixed Retry, Rule-Based, Model B alone, policy-v3,
+policy-v4, Oracle).
 
 "SYNTHETIC COUNTERFACTUAL EVALUATION" -- every number below comes from
 data/raw/counterfactual_outcomes.csv, a hand-designed simulation. It does
@@ -23,9 +23,9 @@ Two phases, strictly ordered (brief section 2/6 -- never tune on test):
      Model B when the numbers are otherwise equal, then (b) fewer
      no-actions, both deterministic and documented, not test-informed.
   2. TEST evaluation, run once, comparing 6 policies (brief section 4/6):
-     Fixed Retry, Rule-Based, Model B alone (no abstention), Day-9 original
+     Fixed Retry, Rule-Based, Model B alone (no abstention), policy-v3 original
      fallback (frozen Rs10 threshold, kept exactly as shipped -- brief
-     section 4 "Do NOT delete Day-9 results"), Day-10 improved fallback
+     section 4 "Do NOT delete policy-v3 results"), policy-v4 improved fallback
      (frozen config from phase 1), Oracle.
 """
 from __future__ import annotations
@@ -63,7 +63,7 @@ REPORTS_DIR = PROJECT_ROOT / "evaluation" / "reports"
 MARGIN_THRESHOLD_CANDIDATES = [0, 5, 10, 15, 20, 25, 50, 75, 100]
 FALLBACK_ADVANTAGE_CANDIDATES = [0, 5, 10, 15, 20, 25, 50, 75, 100]  # reused from the same set -- see module docstring
 
-POLICY_NAMES = ["no_recovery", "fixed_retry", "rule_based", "day8_model_b_alone", "day9_original_fallback", "day10_improved_fallback", "oracle_policy"]
+POLICY_NAMES = ["no_recovery", "fixed_retry", "rule_based", "model_b_alone", "original_fallback_policy", "improved_fallback_policy", "oracle_policy"]
 
 # The single headline comparison the specification and dashboard care about
 # most (brief: "the agent vs. Razorpay's own baseline" / "clearing all three
@@ -71,7 +71,7 @@ POLICY_NAMES = ["no_recovery", "fixed_retry", "rule_based", "day8_model_b_alone"
 # bootstrap CI below are computed for this one pair -- see
 # evaluation/statistics.py's module docstring for why McNemar is restricted
 # to the binary outcome only.
-DEPLOYED_POLICY_NAME = "day10_improved_fallback"
+DEPLOYED_POLICY_NAME = "improved_fallback_policy"
 HEADLINE_BASELINE_NAME = "fixed_retry"
 BOOTSTRAP_N_RESAMPLES = 10000
 BOOTSTRAP_SEED = 42
@@ -196,7 +196,7 @@ def _run_v4_for_all_events_with_realized(
     return pd.DataFrame(records)
 
 
-def select_day10_configuration_on_validation(val_df: pd.DataFrame, model: dict) -> tuple[dict, dict]:
+def select_validation_configuration(val_df: pd.DataFrame, model: dict) -> tuple[dict, dict]:
     """VALIDATION-ONLY search (brief section 2) -- test is never touched
     here. Returns (chosen_config, all_results). chosen_config is a dict with
     keys margin_threshold / fallback_mode / fallback_advantage_threshold.
@@ -291,7 +291,7 @@ def select_day10_configuration_on_validation(val_df: pd.DataFrame, model: dict) 
 # Test-set evaluation across all 6 policies
 # ---------------------------------------------------------------------------
 
-def evaluate_events_v4(test_df: pd.DataFrame, model: dict, day10_config: dict) -> pd.DataFrame:
+def evaluate_events_v4(test_df: pd.DataFrame, model: dict, deployed_config: dict) -> pd.DataFrame:
     records = []
     for event_id, group in test_df.groupby("event_id"):
         first = group.iloc[0]
@@ -311,11 +311,11 @@ def evaluate_events_v4(test_df: pd.DataFrame, model: dict, day10_config: dict) -
         rule_sel = rule_result["selected_candidate_type"]
         rule_communications = rule_result["communication_actions"]  # BASELINE-FIDELITY FIX: WhatsApp nudge + follow-up, see policy/baselines.py
         model_alone_decision = decide_engine(event_id, subscription_id, failure_timestamp, amount, classification_bucket, _event_context(first), costs=DEFAULT_COSTS, abstention_threshold=float("-inf"), model=model)
-        day9_decision = decide_engine(event_id, subscription_id, failure_timestamp, amount, classification_bucket, _event_context(first), costs=DEFAULT_COSTS, abstention_threshold=DEFAULT_ABSTENTION_THRESHOLD_RS, model=model)
-        day10_decision = decide_engine_v4(
+        original_fallback_decision = decide_engine(event_id, subscription_id, failure_timestamp, amount, classification_bucket, _event_context(first), costs=DEFAULT_COSTS, abstention_threshold=DEFAULT_ABSTENTION_THRESHOLD_RS, model=model)
+        deployed_decision = decide_engine_v4(
             event_id, subscription_id, failure_timestamp, amount, classification_bucket, _event_context(first), costs=DEFAULT_COSTS,
-            margin_threshold=day10_config["margin_threshold"], fallback_mode=day10_config["fallback_mode"],
-            fallback_advantage_threshold=day10_config["fallback_advantage_threshold"], model=model,
+            margin_threshold=deployed_config["margin_threshold"], fallback_mode=deployed_config["fallback_mode"],
+            fallback_advantage_threshold=deployed_config["fallback_advantage_threshold"], model=model,
         )
         # APPLES-TO-APPLES FIX (final pre-submission audit, third pass): once
         # the deployed policy and Fixed Retry both get up to 3 scheduled
@@ -337,11 +337,11 @@ def evaluate_events_v4(test_df: pd.DataFrame, model: dict, day10_config: dict) -
         # MULTI-ATTEMPT PERSISTENCE (final pre-submission audit): the deployed
         # policy's own Fixed-Retry-style schedule -- see
         # policy/decision_engine_v4.py::build_retry_schedule_from_decision.
-        # Purely additive: day10_decision.selected_candidate_type (the
+        # Purely additive: deployed_decision.selected_candidate_type (the
         # single-attempt semantics every other field below still uses) is
-        # completely unchanged; day10_schedule is only consulted for the
-        # `day10_improved_fallback` row's realized outcome/cost below.
-        day10_schedule, _day10_schedule_dts = build_retry_schedule_from_decision(day10_decision)
+        # completely unchanged; deployed_schedule is only consulted for the
+        # `improved_fallback_policy` row's realized outcome/cost below.
+        deployed_schedule, _deployed_schedule_dts = build_retry_schedule_from_decision(deployed_decision)
 
         selections = {
             # Evaluation-compliance audit fix: the specification's Section 11
@@ -353,9 +353,9 @@ def evaluate_events_v4(test_df: pd.DataFrame, model: dict, day10_config: dict) -
             # every other policy, so this needed no other new code.
             "no_recovery": NO_ACTION,
             "fixed_retry": fixed_sel, "rule_based": rule_sel,
-            "day8_model_b_alone": model_alone_decision.selected_candidate_type,
-            "day9_original_fallback": day9_decision.selected_candidate_type,
-            "day10_improved_fallback": day10_decision.selected_candidate_type,
+            "model_b_alone": model_alone_decision.selected_candidate_type,
+            "original_fallback_policy": original_fallback_decision.selected_candidate_type,
+            "improved_fallback_policy": deployed_decision.selected_candidate_type,
             "oracle_policy": oracle_sel,
         }
         for policy_name in POLICY_NAMES:
@@ -368,19 +368,19 @@ def evaluate_events_v4(test_df: pd.DataFrame, model: dict, day10_config: dict) -
                 record[f"{policy_name}__realized_amount_recovered"] = sequence.amount_recovered
                 record[f"{policy_name}__n_attempts"] = sequence.n_attempts
                 record[f"{policy_name}__retry_schedule"] = fixed_schedule
-            elif policy_name == "day10_improved_fallback":
+            elif policy_name == "improved_fallback_policy":
                 # MULTI-ATTEMPT PERSISTENCE: same sequence-scoring function as
                 # Fixed Retry (`score_fixed_retry_sequence` is a generic,
                 # policy-agnostic "stop at first recovered attempt" scorer,
                 # not Fixed-Retry-specific despite its name -- see that
                 # function's own docstring) applied to
-                # `day10_schedule` instead of Fixed Retry's fixed T+1/T+2/T+3
+                # `deployed_schedule` instead of Fixed Retry's fixed T+1/T+2/T+3
                 # calendar schedule.
-                sequence = score_fixed_retry_sequence(day10_schedule, realized_recovered, realized_amount)
+                sequence = score_fixed_retry_sequence(deployed_schedule, realized_recovered, realized_amount)
                 record[f"{policy_name}__realized_recovered"] = sequence.recovered
                 record[f"{policy_name}__realized_amount_recovered"] = sequence.amount_recovered
                 record[f"{policy_name}__n_attempts"] = sequence.n_attempts
-                record[f"{policy_name}__retry_schedule"] = day10_schedule
+                record[f"{policy_name}__retry_schedule"] = deployed_schedule
             elif policy_name == "oracle_policy":
                 # APPLES-TO-APPLES FIX: same sequence-scoring as Fixed Retry
                 # and the deployed policy -- see oracle_schedule's own
@@ -408,8 +408,8 @@ def evaluate_events_v4(test_df: pd.DataFrame, model: dict, day10_config: dict) -
 
         # Decision-trace fields (brief section 7)
         model_best_type = model_alone_decision.selected_candidate_type
-        model_best_score = next((s for s in day10_decision.candidate_scores if s.candidate_type == model_best_type and s.valid), None)
-        rule_score = next((s for s in day10_decision.candidate_scores if s.candidate_type == rule_sel and s.valid), None)
+        model_best_score = next((s for s in deployed_decision.candidate_scores if s.candidate_type == model_best_type and s.valid), None)
+        rule_score = next((s for s in deployed_decision.candidate_scores if s.candidate_type == rule_sel and s.valid), None)
         record["trace__model_b_best_candidate"] = model_best_type
         record["trace__model_b_predicted_value"] = model_best_score.predicted_recovery_value if model_best_score else None
         record["trace__model_b_net_value"] = model_best_score.expected_net_value if model_best_score else None
@@ -417,14 +417,14 @@ def evaluate_events_v4(test_df: pd.DataFrame, model: dict, day10_config: dict) -
         record["trace__rule_predicted_value"] = rule_score.predicted_recovery_value if rule_score else None
         record["trace__rule_net_value"] = rule_score.expected_net_value if rule_score else None
         record["trace__net_value_difference"] = (rule_score.expected_net_value - model_best_score.expected_net_value) if (rule_score and model_best_score) else None
-        record["trace__day9_margin"] = day9_decision.decision_margin
-        record["trace__day10_margin"] = day10_decision.decision_margin
-        record["trace__day10_margin_threshold"] = day10_decision.margin_threshold_used
-        record["trace__day10_fallback_advantage_threshold"] = day10_decision.fallback_advantage_threshold
-        record["trace__day9_decision_source"] = day9_decision.decision_source
-        record["trace__day10_decision_source"] = day10_decision.decision_source
+        record["trace__original_fallback_margin"] = original_fallback_decision.decision_margin
+        record["trace__deployed_margin"] = deployed_decision.decision_margin
+        record["trace__deployed_margin_threshold"] = deployed_decision.margin_threshold_used
+        record["trace__deployed_fallback_advantage_threshold"] = deployed_decision.fallback_advantage_threshold
+        record["trace__original_fallback_decision_source"] = original_fallback_decision.decision_source
+        record["trace__deployed_decision_source"] = deployed_decision.decision_source
         record["trace__oracle_pick"] = oracle_sel
-        record["trace__latent_value_final_selection"] = float(latent_value.get(day10_decision.selected_candidate_type, 0.0)) if day10_decision.selected_candidate_type != NO_ACTION else 0.0
+        record["trace__latent_value_final_selection"] = float(latent_value.get(deployed_decision.selected_candidate_type, 0.0)) if deployed_decision.selected_candidate_type != NO_ACTION else 0.0
         record["trace__latent_value_model_b_selection"] = float(latent_value.get(model_best_type, 0.0)) if model_best_type != NO_ACTION else 0.0
 
         records.append(record)
@@ -481,17 +481,17 @@ def summarize_realized(events: pd.DataFrame) -> dict:
     return summary
 
 
-def summarize_operational(events: pd.DataFrame, day10_config: dict) -> dict:
+def summarize_operational(events: pd.DataFrame, deployed_config: dict) -> dict:
     n = len(events)
-    n_actions = int((events["day10_improved_fallback__selected_candidate_type"] != NO_ACTION).sum())
+    n_actions = int((events["improved_fallback_policy__selected_candidate_type"] != NO_ACTION).sum())
     n_no_action = n - n_actions
-    n_fallback = int((events["trace__day10_decision_source"] == "rule_based_fallback").sum())
-    n_model_direct = int((events["trace__day10_decision_source"] == "day8_model_b").sum())
-    margins = events["trace__day10_margin"].dropna()
+    n_fallback = int((events["trace__deployed_decision_source"] == "rule_based_fallback").sum())
+    n_model_direct = int((events["trace__deployed_decision_source"] == "subscription_value_model").sum())
+    margins = events["trace__deployed_margin"].dropna()
     advantages = events["trace__net_value_difference"].dropna()
-    n_changed_by_fallback = int((events["day10_improved_fallback__selected_candidate_type"] != events["day8_model_b_alone__selected_candidate_type"]).sum())
+    n_changed_by_fallback = int((events["improved_fallback_policy__selected_candidate_type"] != events["model_b_alone__selected_candidate_type"]).sum())
     return {
-        "config": day10_config,
+        "config": deployed_config,
         "n_events": n,
         "model_b_direct_selections": n_model_direct,
         "fallback_count": n_fallback,
@@ -500,7 +500,7 @@ def summarize_operational(events: pd.DataFrame, day10_config: dict) -> dict:
         "average_decision_margin_rs": float(margins.mean()) if len(margins) else None,
         "average_fallback_advantage_rs": float(advantages.mean()) if len(advantages) else None,
         "n_decisions_changed_by_fallback_vs_model_b_alone": n_changed_by_fallback,
-        "decision_source_distribution": events["trace__day10_decision_source"].value_counts().to_dict(),
+        "decision_source_distribution": events["trace__deployed_decision_source"].value_counts().to_dict(),
     }
 
 
@@ -702,7 +702,7 @@ def summarize_economics(events: pd.DataFrame, realized_summary: dict) -> dict:
         SAME `intervention_cost` field (kept, not renamed -- see
         policy/economics.py's own terminology-mapping note) rather than a
         second, disconnected field.
-      day10_improved_fallback: MULTI-ATTEMPT PERSISTENCE (final pre-
+      improved_fallback_policy: MULTI-ATTEMPT PERSISTENCE (final pre-
         submission audit) -- same `n_attempts`-based costing as fixed_retry,
         since this policy can now also make up to
         guardrails.MAX_RETRY_ATTEMPTS distinct attempts per event (see
@@ -718,7 +718,7 @@ def summarize_economics(events: pd.DataFrame, realized_summary: dict) -> dict:
     """
     economics = {}
     for name in POLICY_NAMES:
-        if name in ("fixed_retry", "day10_improved_fallback", "oracle_policy"):
+        if name in ("fixed_retry", "improved_fallback_policy", "oracle_policy"):
             total_intervention_cost = float(events[f"{name}__n_attempts"].sum()) * (DEFAULT_COSTS.retry_cost + DEFAULT_COSTS.operational_cost)
         else:
             total_intervention_cost = float(
@@ -784,7 +784,7 @@ def build_stage_decomposition(events: pd.DataFrame, test_df: pd.DataFrame, model
         rs = float(events[f"{policy_name}__realized_amount_recovered"].sum())
         rate = float(events[f"{policy_name}__realized_recovered"].mean())
         cost = float(sum(cost_for_candidate(t, DEFAULT_COSTS) for t in events[f"{policy_name}__selected_candidate_type"] if t != NO_ACTION))
-        if policy_name in ("fixed_retry", "day10_improved_fallback", "oracle_policy"):
+        if policy_name in ("fixed_retry", "improved_fallback_policy", "oracle_policy"):
             cost = float(events[f"{policy_name}__n_attempts"].sum()) * (DEFAULT_COSTS.retry_cost + DEFAULT_COSTS.operational_cost)
         if policy_name == "rule_based":
             cost += contact_cost(int(events["rule_based__n_contacts"].sum()), DEFAULT_COSTS)
@@ -797,10 +797,10 @@ def build_stage_decomposition(events: pd.DataFrame, test_df: pd.DataFrame, model
     stages = {
         "1_fixed_retry_baseline": _from_existing("fixed_retry"),
         "2_rule_based_baseline": _from_existing("rule_based"),
-        "3_model_only_no_margin_gate": _from_existing("day8_model_b_alone"),
+        "3_model_only_no_margin_gate": _from_existing("model_b_alone"),
         "4_model_plus_margin_gate_no_action_fallback_DIAGNOSTIC": _diagnostic_sweep(5.0, "no_action_when_below_margin"),
         "5_model_plus_margin_gate_old_blind_swap_fallback_DIAGNOSTIC_REJECTED": _diagnostic_sweep(5.0, "always_fallback_when_below_margin"),
-        "6_deployed_policy_final": _from_existing("day10_improved_fallback"),
+        "6_deployed_policy_final": _from_existing("improved_fallback_policy"),
         "7_oracle_upper_bound": _from_existing("oracle_policy"),
     }
     for stage in stages.values():
@@ -826,8 +826,8 @@ def print_decision_trace(events: pd.DataFrame, n: int = 12) -> None:
     print(f"=== Decision trace (first {n} test events) ===")
     cols = [
         "event_id", "trace__model_b_best_candidate", "trace__model_b_predicted_value", "trace__rule_candidate",
-        "trace__rule_predicted_value", "trace__net_value_difference", "trace__day10_margin_threshold",
-        "day10_improved_fallback__selected_candidate_type", "trace__day10_decision_source", "trace__oracle_pick",
+        "trace__rule_predicted_value", "trace__net_value_difference", "trace__deployed_margin_threshold",
+        "improved_fallback_policy__selected_candidate_type", "trace__deployed_decision_source", "trace__oracle_pick",
         "trace__latent_value_final_selection", "trace__latent_value_model_b_selection",
     ]
     for _, row in events[cols].head(n).iterrows():
@@ -835,8 +835,8 @@ def print_decision_trace(events: pd.DataFrame, n: int = 12) -> None:
             f"  event={row['event_id']:<6} model_b_best={row['trace__model_b_best_candidate']:<20} "
             f"model_b_value=Rs{row['trace__model_b_predicted_value']:<8.2f} rule_pick={row['trace__rule_candidate']:<20} "
             f"rule_value=Rs{row['trace__rule_predicted_value']:<8.2f} diff=Rs{row['trace__net_value_difference']:<8.2f} "
-            f"threshold=Rs{row['trace__day10_margin_threshold']:<6.2f} final={row['day10_improved_fallback__selected_candidate_type']:<20} "
-            f"source={row['trace__day10_decision_source']:<20} oracle={row['trace__oracle_pick']:<20} "
+            f"threshold=Rs{row['trace__deployed_margin_threshold']:<6.2f} final={row['improved_fallback_policy__selected_candidate_type']:<20} "
+            f"source={row['trace__deployed_decision_source']:<20} oracle={row['trace__oracle_pick']:<20} "
             f"latent_final=Rs{row['trace__latent_value_final_selection']:<8.2f} latent_model_b=Rs{row['trace__latent_value_model_b_selection']:.2f}"
         )
     print()
@@ -850,10 +850,10 @@ def main() -> None:
     train_df, val_df, test_df = split_candidate_dataset(df)
     del train_df
 
-    print("=== Phase 1: Day-10 configuration search on VALIDATION ONLY ===")
+    print("=== Phase 1: policy-v4 configuration search on VALIDATION ONLY ===")
     print("    (economic correction: primary key is now REALIZED Rs recovered on validation, not latent value alone -- see")
-    print("    select_day10_configuration_on_validation's docstring and policy/decision_engine_v4.py's ECONOMIC-CORRECTION FINDING)")
-    chosen_config, search_results = select_day10_configuration_on_validation(val_df, model)
+    print("    select_validation_configuration's docstring and policy/decision_engine_v4.py's ECONOMIC-CORRECTION FINDING)")
+    chosen_config, search_results = select_validation_configuration(val_df, model)
     ranked = sorted(search_results.values(), key=lambda r: (r["total_realized_value_selected_rs"], r["total_latent_value_selected_rs"]), reverse=True)
     for r in ranked[:15]:
         is_chosen = r["margin_threshold"] == chosen_config["margin_threshold"] and r["fallback_mode"] == chosen_config["fallback_mode"] and r["fallback_advantage_threshold"] == chosen_config["fallback_advantage_threshold"]
@@ -884,7 +884,7 @@ def main() -> None:
 
     report = {
         "label": "SYNTHETIC COUNTERFACTUAL EVALUATION -- does not measure real Razorpay recovery performance.",
-        "day10_configuration_selection_validation_only": {
+        "validation_configuration_selection": {
             "chosen": chosen_config, "top_15_by_realized_value": ranked[:15], "n_configurations_searched": len(search_results),
             "selection_metric": "total_realized_value_selected_rs (economic correction -- previously total_latent_value_selected_rs alone; see policy/decision_engine_v4.py's ECONOMIC-CORRECTION FINDING)",
         },
@@ -912,7 +912,7 @@ def main() -> None:
         s = realized_summary[name]
         print(f"  {name:26s} recovered=Rs{s['total_recovered_rs']:>10.2f} rate={s['recovery_rate']:.4f} incremental=Rs{s['incremental_rs_vs_fixed_retry']:>+9.2f}")
     print()
-    print("OPERATIONAL (Day-10 decision engine only):")
+    print("OPERATIONAL (policy-v4 decision engine only):")
     for k, v in operational_summary.items():
         print(f"  {k}: {v}")
     print()

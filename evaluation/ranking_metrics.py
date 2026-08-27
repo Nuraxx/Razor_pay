@@ -1,12 +1,12 @@
 """
-Day-7 ranking metrics -- pure functions, no I/O, so each is independently
+Ranking metrics -- pure functions, no I/O, so each is independently
 testable (tests/test_ranking_metrics.py) against hand-computed toy examples.
 
 Every metric here takes ONE event's candidates at a time (a "ranking
 group") as parallel arrays: `scores` (a policy's predicted preference,
 higher = better), `truth` (ground truth preference to rank against --
 typically `recovery_probability_latent`, the Oracle's own signal, for
-apples-to-apples continuity with Day 6's Oracle definition), and
+apples-to-apples continuity with the candidate-aware model's Oracle definition), and
 `candidate_types` (labels, for readability / top-k membership checks).
 `evaluate_ranking_policy.py` aggregates these across all test events.
 """
@@ -77,7 +77,7 @@ def pairwise_concordant_pairs(scores: np.ndarray, truth: np.ndarray) -> tuple[in
 
 def regret(scores: np.ndarray, truth: np.ndarray, candidate_types: np.ndarray, amount: float, valid_mask: np.ndarray | None = None) -> float:
     """oracle_expected_value - policy_expected_value, both using `truth` as
-    the probability (same definition as Day 6). `valid_mask` restricts both
+    the probability (same definition as the candidate-aware model). `valid_mask` restricts both
     the oracle's and the policy's choice to guardrail-valid candidates (all
     True if not supplied -- callers should supply it in production use)."""
     if valid_mask is None:

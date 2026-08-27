@@ -1,5 +1,5 @@
 """
-Day-3 synthetic dataset generator tests.
+Synthetic dataset generator tests.
 
 Uses a smaller n_subscriptions than the real data/raw output for speed --
 the generation mechanism doesn't depend on scale, so a smaller run exercises
@@ -210,7 +210,7 @@ def test_archetype_proportions_are_approximately_as_specified():
 
 def test_class_balance_is_not_degenerate(dataset):
     """The label must not collapse to (near-)always-one-value -- that would
-    make the learning problem trivial/undefined, contrary to the Day-3 goal."""
+    make the learning problem trivial/undefined, contrary to this generator's goal."""
     rate = dataset["recovery_outcomes"]["recovered_within_14d"].mean()
     assert 0.05 < rate < 0.95
 

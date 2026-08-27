@@ -1,7 +1,7 @@
 """
-Day-4 feature selection + preprocessing.
+Feature selection + preprocessing.
 
-Selects exactly which Day-3 `data/processed/*.csv` columns are legitimate
+Selects exactly which `data/processed/*.csv` columns are legitimate
 model inputs -- features that were genuinely knowable at the moment a
 payment failed -- and documents every excluded column with a reason. See
 EXCLUDED_COLUMNS below; this dict is the single source of truth both the
@@ -63,7 +63,7 @@ DISTRACTOR_FEATURES = ["app_version", "device_build", "ui_theme"]
 FEATURE_COLUMNS = NUMERIC_FEATURES + CATEGORICAL_FEATURES + BOOLEAN_FEATURES
 
 # Every column present in data/processed/*.csv that is NOT a model feature,
-# with the reason it's excluded. Reviewed explicitly per the Day-4 brief.
+# with the reason it's excluded. Reviewed explicitly per this module's own brief.
 EXCLUDED_COLUMNS = {
     "event_id": "identifier -- unique per row, not predictive, would only let the model memorize rows",
     "subscription_id": "identifier -- same subscription can appear across multiple failures; not a feature",
@@ -75,13 +75,13 @@ EXCLUDED_COLUMNS = {
     ),
     "signup_date": "raw high-cardinality timestamp; its useful signal is already captured by tenure_days.",
     "monthly_amount": "exact duplicate of `amount` in this dataset (failure amount == subscription's monthly billed amount by construction) -- redundant.",
-    "error_reason": "constant across the entire Day-3 dataset (always 'insufficient_fund' by Day-3 scope) -- zero variance, carries no information.",
+    "error_reason": "constant across the entire dataset (always 'insufficient_fund' by design) -- zero variance, carries no information.",
     "recovered_within_14d": "THE TARGET LABEL -- used as y, never as a feature.",
     "recovered_at": "post-outcome information -- only known after the failure resolves (or doesn't). Using it would leak the label.",
     "recovered_via": "post-outcome information -- same reason as recovered_at.",
     "final_amount_recovered": "post-outcome information -- same reason as recovered_at.",
-    "archetype": "hidden, generation-only field. Must never be a model feature (also not present in data/processed/*.csv at all -- Day 3 already drops it).",
-    "split": "dataset-partition bookkeeping, not a real-world signal (also not present in data/processed/*.csv -- Day 3 already drops it).",
+    "archetype": "hidden, generation-only field. Must never be a model feature (also not present in data/processed/*.csv at all -- the generator already drops it).",
+    "split": "dataset-partition bookkeeping, not a real-world signal (also not present in data/processed/*.csv -- the generator already drops it).",
 }
 
 

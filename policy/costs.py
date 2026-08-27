@@ -1,5 +1,5 @@
 """
-Day-9 intervention-cost configuration -- the ONE place cost numbers live.
+policy-v3 intervention-cost configuration -- the ONE place cost numbers live.
 
 `policy/decision_engine.py` never hard-codes a cost; every cost lookup goes
 through `cost_for_candidate()` below, which reads from an `InterventionCosts`
@@ -11,7 +11,7 @@ IMPORTANT -- SYNTHETIC / PROJECT ASSUMPTIONS, NOT RAZORPAY PRODUCTION PRICES:
 payment-gateway pricing or Razorpay cost structure) -- a real deployment
 would replace it with an actual metered cost.
 
-Only `retry_cost` is used by Day 9's candidate actions -- all 5 candidate
+Only `retry_cost` is used by policy-v3's candidate actions -- all 5 candidate
 types (`immediate`, `plus_1_day_morning`, `payday_window`, `plus_3_days`,
 `month_end_window`) are automated payment retries, so they share one cost.
 `sms_cost` / `voice_cost` / `operational_cost` remain unused placeholders --
@@ -22,7 +22,7 @@ BASELINE-FIDELITY FIX -- `whatsapp_cost` IS NOW USED, by the Rule-Based
 EVALUATION BASELINE only (`policy/baselines.py::rule_based_baseline`'s
 `communication_actions`, consumed by `evaluation/evaluate_decision_engine_v4.py`'s
 contact-cost/cost-per-recovery metrics) -- never by the live orchestrator
-(`recovery/orchestrator.py` sends real communication through the Day-11 LLM
+(`recovery/orchestrator.py` sends real communication through the LLM
 layer, an entirely separate code path this cost has no bearing on). Value
 sourced directly from the original specification's own disclosed anchor
 rate ("Contact cost anchored to real 2026 rates (~₹0.135/WhatsApp utility

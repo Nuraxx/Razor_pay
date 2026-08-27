@@ -12,8 +12,8 @@ Per the original specification
 (~/Downloads/razorpay-track3-project-specification.md, "Evaluation metrics
 and formulas"): "Because these are paired outcomes on the same events, use
 McNemar's test (not a two-proportion z-test) for significance" for recovery
-lift, and (Day-3 section) "report a bootstrap confidence interval on any
-model-vs-baseline delta, not a bare point estimate."
+lift, and "report a bootstrap confidence interval on any model-vs-baseline
+delta, not a bare point estimate."
 
 McNemar's test is applied ONLY to the paired BINARY `realized_recovered`
 outcome -- never to the continuous ₹ amounts, which is what the bootstrap CI

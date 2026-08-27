@@ -68,8 +68,8 @@ class TestMcNemarTest:
         assert r1 == r2
 
     def test_policy_labels_are_reported_correctly(self):
-        result = mcnemar_test([True, False], [False, True], policy_a="day10_improved_fallback", policy_b="fixed_retry")
-        assert result.policy_a == "day10_improved_fallback"
+        result = mcnemar_test([True, False], [False, True], policy_a="improved_fallback_policy", policy_b="fixed_retry")
+        assert result.policy_a == "improved_fallback_policy"
         assert result.policy_b == "fixed_retry"
 
     def test_swapping_a_and_b_swaps_b_and_c(self):
@@ -221,8 +221,8 @@ class TestStatisticalTestsIntegration:
             {
                 "fixed_retry__realized_recovered": [True, True, False, True, False],
                 "fixed_retry__realized_amount_recovered": [100.0, 200.0, 0.0, 150.0, 0.0],
-                "day10_improved_fallback__realized_recovered": [True, False, False, True, True],
-                "day10_improved_fallback__realized_amount_recovered": [100.0, 0.0, 0.0, 150.0, 90.0],
+                "improved_fallback_policy__realized_recovered": [True, False, False, True, True],
+                "improved_fallback_policy__realized_amount_recovered": [100.0, 0.0, 0.0, 150.0, 90.0],
                 # Evaluation-compliance audit fix: summarize_statistical_tests
                 # now also computes additional_comparisons vs rule_based and
                 # vs no_recovery (specification Section 7 -- must check all
@@ -254,8 +254,8 @@ class TestStatisticalTestsIntegration:
             {
                 "fixed_retry__realized_recovered": [True, True, False, True, False],
                 "fixed_retry__realized_amount_recovered": [100.0, 200.0, 0.0, 150.0, 0.0],
-                "day10_improved_fallback__realized_recovered": [True, False, False, True, True],
-                "day10_improved_fallback__realized_amount_recovered": [100.0, 0.0, 0.0, 150.0, 90.0],
+                "improved_fallback_policy__realized_recovered": [True, False, False, True, True],
+                "improved_fallback_policy__realized_amount_recovered": [100.0, 0.0, 0.0, 150.0, 90.0],
                 "rule_based__realized_recovered": [True, False, False, True, False],
                 "rule_based__realized_amount_recovered": [100.0, 0.0, 0.0, 150.0, 0.0],
                 "no_recovery__realized_recovered": [False, False, False, False, False],

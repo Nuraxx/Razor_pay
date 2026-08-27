@@ -1,10 +1,10 @@
 """
-Day-11 LLM job orchestration -- the only place that (a) builds a prompt,
+LLM job orchestration -- the only place that (a) builds a prompt,
 (b) calls an `LLMClient`, (c) validates the response against a schema, (d)
 falls back deterministically on any failure, and (e) persists an audit
 trail. Three public pure functions, one per LLM job, plus a DB-aware
 `..._and_log` wrapper for each (same pure-function / DB-wrapper split
-established by policy/decision_engine.py in Day 9).
+established by policy/decision_engine.py in policy-v3).
 
 FAIL-SAFE GUARANTEE (brief section 5 + 10): every one of these functions
 ALWAYS returns a valid `LLMResult` -- never raises, never blocks, never

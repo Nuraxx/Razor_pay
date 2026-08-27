@@ -1,11 +1,11 @@
 """
-Day-8 policy integration tests: Model A's (probability) and Model B's
+Policy integration tests: Model A's (probability) and Model B's
 (value, converted to a probability-equivalent via /amount) scores flow into
 the SAME `policy/recovery_policy.py::decide_candidate_aware` /
-`decide_for_failure_event_candidate_aware` Day 6 built and Day 7 already
-reused -- no new policy code exists for Day 8 either. These tests confirm
-that composition works end-to-end with REAL Day-8 model scores, and that
-every Day-5 guardrail still applies.
+`decide_for_failure_event_candidate_aware` the candidate-aware and ranking
+models already built and reused -- no new policy code exists for Model A/B
+either. These tests confirm that composition works end-to-end with REAL
+Model A/B scores, and that every guardrail still applies.
 """
 import numpy as np
 import pytest
@@ -55,7 +55,7 @@ def one_event_probability_equivalent_scores(latent_splits, model_b_fitted):
     """Real Model-B predictions for one held-out test event, converted to a
     probability-equivalent (predicted_value / amount, clipped to [0,1]) --
     the same conversion evaluation/evaluate_latent_target_policy.py uses to
-    plug Model B into the unmodified Day-6 policy architecture."""
+    plug Model B into the unmodified candidate-aware policy architecture."""
     _train, _val, test_df = latent_splits
     X, _y = select_features_and_target(test_df, "value")
     X_imp = model_b_fitted["imputer"].transform(X)

@@ -1,14 +1,14 @@
 """
-Day-2 orchestration: read a raw_event, classify it deterministically
+Orchestration: read a raw_event, classify it deterministically
 (classification/rules.py), store the result in failure_events, and record
-the decision in audit_log — following the same audit_log convention Day 1
+the decision in audit_log — following the same audit_log convention
 established in app/models.py ("every decision the system makes — including
 deciding to do nothing — goes here").
 
 Idempotency is enforced at the application layer (query-before-insert on
 raw_event_id) rather than a DB constraint: this path is driven by a
 single-threaded CLI/batch script (scripts/classify_raw_events.py), not
-concurrent HTTP requests, so the race Day 1's webhook endpoint guards
+concurrent HTTP requests, so the race the webhook endpoint guards
 against with a UNIQUE column doesn't apply here. Re-running classification
 over the same raw_events is always safe.
 """

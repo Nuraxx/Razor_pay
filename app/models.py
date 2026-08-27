@@ -1,31 +1,31 @@
 """
-Day-1 schema.
+Schema.
 
-raw_events    — fully populated today: every verified, de-duplicated webhook
+raw_events    — fully populated: every verified, de-duplicated webhook
                 delivery is stored here with its complete raw payload plus a
                 handful of extracted convenience fields.
 
-failure_events — table created today, left EMPTY today. Day 2's deterministic
-                classifier will read from raw_events and write one row here
-                per failure, bucketing it (retryable_soft / hard_decline /
-                customer_cancelled / unmapped). Columns are nullable now so
-                Day 2 only needs to populate them, not migrate the schema.
+failure_events — populated by the deterministic classifier, which reads from
+                raw_events and writes one row here per failure, bucketing it
+                (retryable_soft / hard_decline / customer_cancelled /
+                unmapped). Columns are nullable so the classifier can
+                populate them without a schema migration.
 
-audit_log     — table created today. Day 1 writes one row per webhook
-                received ("stored") so the audit trail concept is real from
-                day one; Day 2+ will add richer decision rows (classified,
-                retry_scheduled, blocked_by_compliance, etc.) using the same
-                table and the same `actor` convention.
+audit_log     — the webhook receiver writes one row per webhook received
+                ("stored") so the audit trail concept is real from the
+                start; every later stage (classification, policy decisions,
+                compliance blocks, etc.) adds richer decision rows using the
+                same table and the same `actor` convention.
 
-policy_decisions — added Day 5. One row per recovery-policy decision (see
+policy_decisions — one row per recovery-policy decision (see
                 policy/recovery_policy.py) for a failure_events row —
                 selected retry candidate (or NO_ACTION), the model+heuristic
                 probability behind it, and expected recovery value. Every
                 decision (including NO_ACTION, blocked, and duplicate ones)
                 also gets an audit_log row via `failure_event_id` below.
-                Extended Day 9 (policy/decision_engine.py) with cost/margin/
+                Extended policy-v3 (policy/decision_engine.py) with cost/margin/
                 fallback-source columns for the production-shaped decision
-                engine -- see that module's docstring. Extended again Day 10
+                engine -- see that module's docstring. Extended again policy-v4
                 (policy/decision_engine_v4.py) with the margin/advantage
                 threshold config and fallback-strategy label actually in
                 effect for a given decision -- see that module's docstring.
@@ -88,11 +88,11 @@ class RawEvent(Base):
 
 
 class FailureEvent(Base):
-    """Schema only as of Day 1 — Day 2 populates this."""
+    """Populated by the deterministic classifier."""
     __tablename__ = "failure_events"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    raw_event_id: Mapped[int] = mapped_column(Integer, index=True)  # FK to raw_events.id (added Day 2)
+    raw_event_id: Mapped[int] = mapped_column(Integer, index=True)  # FK to raw_events.id
 
     classification_bucket: Mapped[str | None] = mapped_column(
         String(32), nullable=True
@@ -108,8 +108,8 @@ class AuditLog(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     raw_event_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
-    # Added Day 5: classification/policy rows trace to a failure_events row.
-    # Nullable and additive -- existing Day 1/2 rows only ever set raw_event_id.
+    # Classification/policy rows trace to a failure_events row.
+    # Nullable and additive -- a webhook-storage/classification row only ever sets raw_event_id.
     failure_event_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
 
     action: Mapped[str] = mapped_column(String(64))  # e.g. "webhook_received_and_stored"
@@ -121,7 +121,7 @@ class AuditLog(Base):
 
 class PolicyDecision(Base):
     """
-    Day 5: one row per recovery-policy decision. See policy/recovery_policy.py
+    One row per recovery-policy decision. See policy/recovery_policy.py
     for the deterministic decision logic that produces these.
 
     Idempotent by event_id -- a second decide() call for the same event_id
@@ -148,22 +148,22 @@ class PolicyDecision(Base):
 
     decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
-    # -- Added Day 9 (policy/decision_engine.py). All nullable/additive --
-    # existing Day 5-8 rows never populate these. expected_recovery_value
-    # already holds Day-9's `predicted_recovery_value`, and
-    # expected_incremental_value already holds Day-9's `expected_net_value`
+    # -- Added policy-v3 (policy/decision_engine.py). All nullable/additive --
+    # existing rows from earlier policy versions never populate these. expected_recovery_value
+    # already holds policy-v3's `predicted_recovery_value`, and
+    # expected_incremental_value already holds policy-v3's `expected_net_value`
     # (same formula: recovery value - intervention cost) -- no duplicate
     # columns for those two.
     classification_bucket: Mapped[str | None] = mapped_column(String(32), nullable=True)
     intervention_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
     runner_up_value: Mapped[float | None] = mapped_column(Float, nullable=True)
     decision_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
-    # "day8_model_b" | "rule_based_fallback" | "no_action"
+    # "subscription_value_model" | "rule_based_fallback" | "no_action"
     decision_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
     model_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
-    # -- Added Day 10 (policy/decision_engine_v4.py). All nullable/additive --
-    # existing Day 5-9 rows never populate these. `decision_margin` above
+    # -- Added policy-v4 (policy/decision_engine_v4.py). All nullable/additive --
+    # existing rows from earlier policy versions never populate these. `decision_margin` above
     # already holds the *observed* margin for a decision; these three record
     # the CONFIG that was in effect (which is not always recoverable from the
     # observed margin alone, since the search now varies more than one knob).
@@ -215,7 +215,7 @@ class PolicyDecision(Base):
 
 class LLMInvocation(Base):
     """
-    Day 11: one row per LLM call (any of the 3 jobs in llm/service.py).
+    One row per LLM call (any of the 3 jobs in llm/service.py).
     Every invocation ALSO gets a companion audit_log row (actor="llm",
     reason includes task_name/success/error_type) -- this table exists
     alongside audit_log, not instead of it, so LLM calls are both

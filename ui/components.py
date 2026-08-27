@@ -1,5 +1,5 @@
 """
-Day-13/14 reusable Streamlit render helpers -- every page composes these
+Reusable Streamlit render helpers -- every page composes these
 rather than hand-rolling markup, so spacing/typography/badges stay
 consistent across the whole console.
 """

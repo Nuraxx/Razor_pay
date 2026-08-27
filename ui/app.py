@@ -1,23 +1,23 @@
 """
-Day-14 dashboard entry point -- "Adaptive Recovery: AI-assisted payment
+Dashboard entry point -- "Adaptive Recovery: AI-assisted payment
 recovery" operations console.
 
     ./venv/bin/streamlit run ui/app.py
 
 The UI sits entirely ON TOP of the existing system: it never re-implements
 classification, scoring, compliance, or LLM logic -- every page either (a)
-reads a frozen SYNTHETIC BENCHMARK evaluation report Days 6-10 already
-wrote, (b) queries the REAL, webhook-backed SQLite database
-(settings.DATABASE_URL) read-only for LIVE operational data, or (c) calls
-recovery/orchestrator.py::orchestrate_recovery (Day 12, unmodified) against
-a throwaway in-memory DB to produce DEMO-GENERATED data for the interactive
-demo. See ui/data.py's module docstring for the full three-way distinction,
-which is never blurred anywhere below -- every section on this page carries
-an explicit LIVE / DEMO-GENERATED / SYNTHETIC BENCHMARK tag.
+reads a frozen SYNTHETIC BENCHMARK evaluation report the earlier model
+evaluations already wrote, (b) queries the REAL, webhook-backed SQLite
+database (settings.DATABASE_URL) read-only for LIVE operational data, or
+(c) calls recovery/orchestrator.py::orchestrate_recovery (unmodified)
+against a throwaway in-memory DB to produce DEMO-GENERATED data for the
+interactive demo. See ui/data.py's module docstring for the full three-way
+distinction, which is never blurred anywhere below -- every section on this
+page carries an explicit LIVE / DEMO-GENERATED / SYNTHETIC BENCHMARK tag.
 
-No ML model is trained here, Day-8 Model B is used exactly as trained,
-Day-10 policy / Day-12 compliance logic is unmodified, and the three Day-11
-LLM jobs are unmodified. No live Razorpay payment or real customer message
+No ML model is trained here, Model B is used exactly as trained,
+policy-v4 policy / compliance logic is unmodified, and the three LLM jobs
+are unmodified. No live Razorpay payment or real customer message
 is ever sent from this UI -- it only ever READS the database a real
 webhook delivery (via app/main.py, unmodified) may have already written.
 """
@@ -90,13 +90,13 @@ NAV_ICONS = {
     "Communications": "", "Audit Log": "", "System / Demo": "", "Revenue at Risk": "",
 }
 POLICY_LABELS = {
-    "fixed_retry": "Fixed Retry", "rule_based": "Rule-Based", "day8_model_b_alone": "Day-8 Model B",
-    "day9_original_fallback": "Day-9 Policy", "day10_improved_fallback": "Day-10 Policy", "oracle_policy": "Oracle",
+    "fixed_retry": "Fixed Retry", "rule_based": "Rule-Based", "model_b_alone": "Model B",
+    "original_fallback_policy": "Original Fallback Policy", "improved_fallback_policy": "Improved Fallback Policy", "oracle_policy": "Oracle",
 }
 # The one headline baseline comparison the statistical-significance and
 # economics sections focus on (matches
 # evaluation/evaluate_decision_engine_v4.py's DEPLOYED_POLICY_NAME / HEADLINE_BASELINE_NAME).
-DEPLOYED_POLICY_KEY = "day10_improved_fallback"
+DEPLOYED_POLICY_KEY = "improved_fallback_policy"
 BASELINE_POLICY_KEY = "fixed_retry"
 
 
@@ -158,7 +158,7 @@ def render_policy_comparison_charts(report: dict) -> None:
     st.caption(
         "**Latent expected value** is the synthetic simulation's own ground-truth expectation for the candidate each policy "
         "selected. **Realized counterfactual recovery** is a single stochastic sampled outcome under that same simulation. "
-        "They are deliberately shown separately, never combined into one number — see README \"Day 9\" for why conflating "
+        "They are deliberately shown separately, never combined into one number — see README §16 for why conflating "
         "them would overstate confidence. Neither reflects real Razorpay production performance."
     )
 
@@ -1052,7 +1052,7 @@ def _system_status_fragment() -> None:
         active_model = status.get("llm_active_model") or "—"
         kpi_card("LLM provider (active)", active_provider.upper(), f"{active_model} — get_llm_client()")
     with cols2[1]:
-        kpi_card("Subscription model", "Loaded" if status.get("model_loaded") else "Missing", "Day-8 latent-value model artifact")
+        kpi_card("Subscription model", "Loaded" if status.get("model_loaded") else "Missing", "Latent-value model artifact")
     with cols2[2]:
         kpi_card("Unified ML model", "Loaded" if status.get("unified_model_loaded") else "Missing", "model/unified_model.py artifact")
     with cols2[3]:
@@ -1080,7 +1080,7 @@ def page_system_demo() -> None:
 
     st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
     st.markdown("##### Component versions")
-    st.caption("Two decision paths run live side by side: subscription-linked failures go through the Day-8/policy-v4 path; every other domain goes through the unified ML model.")
+    st.caption("Two decision paths run live side by side: subscription-linked failures go through the Model B/policy-v4 path; every other domain goes through the unified ML model.")
     source_tag("live")
 
     st.markdown("**Razorpay environment & LLM**")

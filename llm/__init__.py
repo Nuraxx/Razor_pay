@@ -1,8 +1,8 @@
 """
-Day-11 LLM-assisted communication layer.
+LLM-assisted communication layer.
 
 Three REQUIRED LLM jobs (project specification, verbatim terminology
-preserved throughout this package -- see README "Day 11"), plus one
+preserved throughout this package -- see README §11), plus one
 OPTIONAL Track-03 job:
 
   1. Outreach microcopy generation: per (failure bucket x customer segment x
@@ -18,7 +18,7 @@ OPTIONAL Track-03 job:
 
 The LLM never classifies failures, never selects retry timing, never makes
 compliance decisions, never decides escalation level, and never overrides
-policy -- see policy/decision_engine_v4.py (Day 10) and
+policy -- see policy/decision_engine_v4.py (policy-v4) and
 policy/revenue_recovery_policy.py (Track-03) for where those deterministic
 decisions are actually made. The LLM is strictly downstream of a decision
 that has already been made without it, for every job including the

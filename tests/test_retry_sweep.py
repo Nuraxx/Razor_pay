@@ -28,7 +28,7 @@ def _make_decision(db, *, event_id: int, types: list[str], datetimes: list[datet
         selected_candidate_datetime=datetimes[0],
         policy_version="policy-v4",
         decision_reason="test fixture",
-        decision_source="day8_model_b",
+        decision_source="subscription_value_model",
         classification_bucket="retryable_soft",
         retry_schedule_json=json.dumps(types),
         retry_schedule_datetimes_json=json.dumps([dt.isoformat() for dt in datetimes]),
@@ -46,7 +46,7 @@ def _make_later_event_row(db, *, event_id: int, subscription_id: str, customer_o
     its own -- only `_subscription_still_eligible`'s re-check reads it."""
     row = PolicyDecision(
         event_id=event_id, subscription_id=subscription_id, selected_candidate_type="immediate",
-        policy_version="policy-v4", decision_reason="later event fixture", decision_source="day8_model_b",
+        policy_version="policy-v4", decision_reason="later event fixture", decision_source="subscription_value_model",
         classification_bucket=classification_bucket, customer_opted_out=customer_opted_out,
     )
     db.add(row)
@@ -67,7 +67,7 @@ def _make_deferred_decision(db, *, event_id: int, deferred_until: datetime, sent
     row = PolicyDecision(
         event_id=event_id, subscription_id=f"sub_retry_sweep_{event_id}", selected_candidate_type="immediate",
         selected_candidate_datetime=deferred_until - timedelta(hours=6), policy_version="policy-v4",
-        decision_reason="test fixture", decision_source="day8_model_b", classification_bucket="retryable_soft",
+        decision_reason="test fixture", decision_source="subscription_value_model", classification_bucket="retryable_soft",
         communication_deferred_until=deferred_until, communication_deferred_sent=sent,
     )
     db.add(row)
@@ -229,7 +229,7 @@ class TestReCheckBeforeActing:
         decision = PolicyDecision(
             event_id=70048, subscription_id=sub_id, selected_candidate_type="immediate",
             selected_candidate_datetime=PAST - timedelta(hours=6), policy_version="policy-v4",
-            decision_reason="test fixture", decision_source="day8_model_b", classification_bucket="retryable_soft",
+            decision_reason="test fixture", decision_source="subscription_value_model", classification_bucket="retryable_soft",
             communication_deferred_until=PAST, communication_deferred_sent=False,
         )
         db.add(decision)

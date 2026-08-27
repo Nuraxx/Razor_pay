@@ -1,13 +1,13 @@
 """
-Day-9 production-shaped recovery decision engine.
+policy-v3 production-shaped recovery decision engine.
 
-Per the brief: NO new ML model. Day 8's Model B (predicts
+Per the brief: NO new ML model. Model B's (predicts
 `expected_recovery_value_latent` directly, in Rs -- see
 model/latent_target_preprocessing.py) is used AS-IS, value-native (no
-probability conversion -- unlike Day 6/7/8's reuse of
+probability conversion -- unlike the candidate-aware/ranking/latent-target models' reuse of
 `policy/recovery_policy.py::decide_candidate_aware`, which expects a
 probability and multiplies by amount internally). This module is new
-because that interface doesn't fit what Day 9 needs: cost-aware net-value
+because that interface doesn't fit what policy-v3 needs: cost-aware net-value
 scoring, deterministic abstention, and a rule-based fallback chain, none of
 which `decide_candidate_aware` was built for.
 
@@ -19,7 +19,7 @@ Flow (brief section 1):
 
 FALLBACK CHAIN (brief section 6) -- three tiers, in order:
 
-    1. PRIMARY: Day-8 Model B, if available, error-free, well-formed output,
+    1. PRIMARY: Model B, if available, error-free, well-formed output,
        and confident (decision margin >= threshold).
     2. FALLBACK: Rule-Based Retry (policy/baselines.py's existing,
        deterministic payday-proximity heuristic), tried whenever the
@@ -30,7 +30,7 @@ FALLBACK CHAIN (brief section 6) -- three tiers, in order:
 Every decision records WHICH tier actually decided it (`decision_source`)
 -- never silent. "Model confidence" here means only the deterministic
 decision-margin abstention rule below; it is NOT calibrated probabilistic
-uncertainty (see README "Day 9").
+uncertainty (see README "policy-v3").
 
 All PREVIOUS guardrails (policy/guardrails.py, unchanged, reused directly)
 still apply and are checked FIRST, before any model call: `retryable_soft`
@@ -57,16 +57,16 @@ from policy.guardrails import MAX_RETRY_ATTEMPTS, is_classification_allowed, val
 from policy.retry_candidates import Candidate, generate_candidates
 
 POLICY_VERSION = "policy-v3"
-MODEL_VERSION = "day8_model_b_catboost_regressor_v1"
+MODEL_VERSION = "subscription_value_model_catboost_regressor_v1"
 NO_ACTION = "NO_ACTION"
 
-SOURCE_MODEL = "day8_model_b"
+SOURCE_MODEL = "subscription_value_model"
 SOURCE_FALLBACK = "rule_based_fallback"
 SOURCE_NO_ACTION = "no_action"
 
 # Chosen via validation-only search over {0,10,25,50,100,150,200,250} -- see
 # evaluation/evaluate_decision_engine.py::select_abstention_threshold_on_validation
-# and README "Day 9: threshold selection". Frozen here; never touched again
+# and README "policy-v3: threshold selection". Frozen here; never touched again
 # after being set from that search (never re-tuned against test results).
 # Search result on the 59 validation events (total latent Rs selected):
 #   Rs0->18258.62  Rs10->18590.40 (best)  Rs25..250->17997.99 (flat, all tied)
@@ -98,7 +98,7 @@ EVENT_FEATURE_KEYS = [
 
 
 class ModelUnavailableError(Exception):
-    """Raised (and caught internally) when Day-8 Model B's artifact can't be loaded."""
+    """Raised (and caught internally) when Model B's artifact can't be loaded."""
 
 
 class MalformedModelOutputError(Exception):
@@ -140,8 +140,8 @@ class Decision:
     decision_reason: str
     created_at: datetime | None = field(default=None, compare=False)  # set only by the DB-aware wrapper -- see module docstring
     candidate_scores: list[CandidateScore] = field(default_factory=list, repr=False, compare=False)
-    # -- Added Day 10 (policy/decision_engine_v4.py). Always None for every
-    # Day-9/policy-v3 decision produced by this module -- v3's decide_engine()
+    # -- Added policy-v4 (policy/decision_engine_v4.py). Always None for every
+    # policy-v3/policy-v3 decision produced by this module -- v3's decide_engine()
     # below never sets them, so v3 semantics are unchanged bit-for-bit. Only
     # policy-v4 (decide_engine_v4) populates them, to record which config was
     # actually in effect for a decision (see app/models.py::PolicyDecision).
@@ -263,7 +263,7 @@ def decide_engine(
     module docstring for the full flow. `model`, if supplied, is a
     pre-loaded {"imputer":..., "catboost_model":...} dict (avoids reloading
     from disk per call in batch evaluation, and lets tests inject a broken
-    model to exercise failure modes); if None, loads Day-8 Model B from
+    model to exercise failure modes); if None, loads Model B from
     disk, tolerating its absence via the fallback chain.
     """
     if already_decided:
@@ -292,7 +292,7 @@ def decide_engine(
     if not valid_candidates:
         return _no_action(event_id, subscription_id, classification_bucket, "blocked_no_valid_candidates: every candidate failed validation", candidate_scores=invalid_scores)
 
-    # --- Tier 1: PRIMARY -- Day-8 Model B ---------------------------------
+    # --- Tier 1: PRIMARY -- Model B ---------------------------------
     model_values: dict[str, float] | None = None
     primary_failure_reason: str | None = None
     try:

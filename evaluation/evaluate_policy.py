@@ -1,5 +1,5 @@
 """
-Day-5 offline policy comparison.
+Offline policy comparison.
 
     ./venv/bin/python evaluation/evaluate_policy.py
 
@@ -12,11 +12,11 @@ calibration:
   3. Rule-Based Retry  (policy/baselines.py::rule_based_baseline)
   4. AI-Assisted Policy (policy/recovery_policy.py::decide, pure -- no DB writes)
 
-IMPORTANT -- what this script does NOT claim (see README "Day 5:
-counterfactual-evaluation limitation" and policy/scoring.py's module
+IMPORTANT -- what this script does NOT claim (see README §16
+"counterfactual-evaluation limitation" and policy/scoring.py's module
 docstring for the full reasoning):
 
-Day-3's synthetic dataset records exactly ONE observed outcome
+The synthetic dataset records exactly ONE observed outcome
 (`recovered_within_14d`) per failure event -- the outcome of whatever
 actually happened, not what would have happened under each of the 5
 candidate retry times. There is no genuine per-candidate counterfactual
@@ -47,7 +47,7 @@ from model.preprocessing import PROJECT_ROOT, load_processed_splits, select_feat
 from policy.baselines import NO_ACTION, fixed_retry_baseline, no_recovery_baseline, rule_based_baseline
 from policy.recovery_policy import decide
 from policy.retry_candidates import CANDIDATE_TYPES
-from policy.scoring import Day4ModelUnavailable, load_calibrated_model, predict_base_recovery_probability
+from policy.scoring import ScoringModelUnavailable, load_calibrated_model, predict_base_recovery_probability
 
 REPORTS_DIR = PROJECT_ROOT / "evaluation" / "reports"
 
@@ -84,7 +84,7 @@ def _decide_as_dict(row, base_prob: float) -> dict:
 
 
 def build_scored_events(test_df: pd.DataFrame, model, imputer) -> pd.DataFrame:
-    """One row per test-set failure event: classification bucket, Day-4
+    """One row per test-set failure event: classification bucket, calibrated
     base_probability, and every approach's decision on that event."""
     X_test, _y = select_features_and_target(test_df)
     base_probabilities = predict_base_recovery_probability(X_test, model, imputer)
@@ -171,7 +171,7 @@ def main() -> None:
 
     try:
         model, imputer = load_calibrated_model()
-    except Day4ModelUnavailable as exc:
+    except ScoringModelUnavailable as exc:
         raise SystemExit(f"{exc}\nRun ./venv/bin/python model/train.py first.") from exc
 
     _train, _val, test_df = load_processed_splits()
@@ -189,7 +189,7 @@ def main() -> None:
             "candidate retry time, so no causal or counterfactual recovery-lift claim is made "
             "for candidate timing or for any approach's selected action. Only PREDICTED expected "
             "recovery value (model probability x amount) is compared across approaches. See "
-            "README 'Day 5: counterfactual-evaluation limitation'."
+            "README §16 'counterfactual-evaluation limitation'."
         ),
     }
     with open(REPORTS_DIR / "policy_evaluation.json", "w") as f:

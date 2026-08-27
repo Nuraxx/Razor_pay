@@ -1,5 +1,5 @@
 """
-Day-14 design system: color tokens, CSS injection, and status-badge styling
+Design system: color tokens, CSS injection, and status-badge styling
 for the "Adaptive Recovery" operations console.
 
 Visual direction (Part 15/30 of the console rebuild): a Razorpay-style

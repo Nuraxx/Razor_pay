@@ -1,5 +1,5 @@
 """
-Day-13 "Adaptive Recovery" dashboard package.
+"Adaptive Recovery" dashboard package.
 
     ui/styles.py       -- color tokens + injected CSS
     ui/utils.py         -- pure formatting helpers, zero project-internal imports

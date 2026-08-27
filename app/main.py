@@ -79,7 +79,7 @@ async def lifespan(app: FastAPI):
             pass
 
 
-app = FastAPI(title="Adaptive Payment Recovery Agent — Day 1", lifespan=lifespan)
+app = FastAPI(title="Adaptive Payment Recovery Agent", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -351,7 +351,7 @@ def receivable_overdue(body: ReceivableOverdueRequest, db: Session = Depends(get
 def promise_to_pay(body: PromiseToPayRequest, db: Session = Depends(get_db)) -> dict:
     """Thin wrapper directly over recovery/promise_service.py::record_customer_reply
     -- no RevenueRiskEvent involved, since that flow already exists and works
-    end to end (Day 11/12). Does NOT duplicate the Razorpay webhook endpoint."""
+    end to end (LLM communication + compliance). Does NOT duplicate the Razorpay webhook endpoint."""
     promise, created = record_customer_reply(
         db, event_id=body.event_id, subscription_id=body.subscription_id, customer_reply_text=body.customer_reply_text,
     )

@@ -1,5 +1,5 @@
 """
-Day-7 ranking-metric correctness tests -- hand-computed toy examples, no
+Ranking-metric correctness tests -- hand-computed toy examples, no
 model or dataset involved (evaluation/ranking_metrics.py is pure).
 """
 import numpy as np

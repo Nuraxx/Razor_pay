@@ -1,9 +1,9 @@
 """
-Day-12 tests: the deterministic compliance gate (policy/compliance.py).
+Tests: the deterministic compliance gate (policy/compliance.py).
 
 Pure-function tests -- ComplianceContext in, ComplianceResult out, no DB,
-no policy call, no LLM call. Integration with the rest of the Day-12 flow
-is covered by tests/test_orchestrator.py's failure matrix.
+no policy call, no LLM call. Integration with the rest of the orchestration
+flow is covered by tests/test_orchestrator.py's failure matrix.
 """
 from datetime import datetime, timedelta
 

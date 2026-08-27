@@ -1,12 +1,12 @@
 """
-Day-4 final evaluation entry point.
+Final evaluation entry point.
 
     ./venv/bin/python evaluation/evaluate_models.py
 
 Loads every artifact model/train.py saved (never retrains anything) and
 evaluates all of them against data/processed/test.csv -- the one dataset
-neither training nor calibration has ever seen. This is the only script in
-Day 4 that touches the test split.
+neither training nor calibration has ever seen. This is the only script for
+the calibrated model that touches the test split.
 
 Also evaluates two trivial baselines (majority-class, training-set base
 rate) and reports bootstrap confidence intervals on the primary metrics,

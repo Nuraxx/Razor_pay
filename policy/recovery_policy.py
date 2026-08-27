@@ -1,8 +1,8 @@
 """
-Day-5 AI-assisted recovery policy.
+AI-assisted recovery policy.
 
-Failed payment -> candidate retry times -> per-candidate scoring (Day-4
-calibrated probability + Day-5 heuristic adjustment, see policy/scoring.py)
+Failed payment -> candidate retry times -> per-candidate scoring (calibrated
+probability + heuristic adjustment, see policy/scoring.py)
 -> hard guardrails (policy/guardrails.py) -> highest-scoring allowed
 candidate, or NO_ACTION.
 
@@ -13,7 +13,7 @@ same DecisionResult for the same inputs -- deterministic, per the brief.
 All persistence (querying policy_decisions history for that state, writing
 policy_decisions + audit_log rows) lives in `decide_for_failure_event`, the
 DB-aware wrapper -- mirroring the classification/rules.py (pure) +
-classification/service.py (DB-aware) split from Day 2.
+classification/service.py (DB-aware) split.
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ from policy.retry_candidates import generate_candidates
 from policy.scoring import score_candidate, score_candidate_with_model_probability
 
 POLICY_VERSION = "policy-v1"
-POLICY_VERSION_CANDIDATE_AWARE = "policy-v2"  # Day 6 -- see decide_candidate_aware() below
+POLICY_VERSION_CANDIDATE_AWARE = "policy-v2"  # see decide_candidate_aware() below
 NO_ACTION = "NO_ACTION"
 
 
@@ -250,7 +250,7 @@ def decide_for_failure_event(
 
 
 # ---------------------------------------------------------------------------
-# Day-6 candidate-aware policy.
+# Candidate-aware policy.
 #
 # Identical guardrails, selection rule, determinism, and audit/idempotency
 # behavior to decide() / decide_for_failure_event() above -- the ONLY
@@ -261,8 +261,9 @@ def decide_for_failure_event(
 # of one shared failure-time base_probability + a heuristic adjustment.
 #
 # Kept as separate functions rather than added parameters to decide() /
-# decide_for_failure_event() so Day 5's tested behavior is untouched byte-
-# for-byte; the near-duplication below is deliberate, not an oversight.
+# decide_for_failure_event() so the heuristic policy's tested behavior is
+# untouched byte-for-byte; the near-duplication below is deliberate, not an
+# oversight.
 # ---------------------------------------------------------------------------
 
 def decide_candidate_aware(

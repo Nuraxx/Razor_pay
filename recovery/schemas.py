@@ -1,5 +1,5 @@
 """
-Day-12 structured final result -- `RecoveryExecutionResult`, the single
+Structured final result -- `RecoveryExecutionResult`, the single
 object `recovery/orchestrator.py::orchestrate_recovery` returns.
 
 `final_status` precedence (deterministic, evaluated in this fixed order --
@@ -40,8 +40,8 @@ see recovery/orchestrator.py for where it's actually computed):
                                unmapped, or a hard_decline event where
                                communication was never requested).
     4. POLICY_FALLBACK      -- payment allowed and proceeding, but the
-                               underlying decision came from Day-9/10's
-                               rule-based fallback tier
+                               underlying decision came from the decision
+                               engine's rule-based fallback tier
                                (decision_source == "rule_based_fallback"),
                                not the primary model. Surfaced ahead of the
                                communication outcome because "this used the

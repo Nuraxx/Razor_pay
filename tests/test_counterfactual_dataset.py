@@ -1,5 +1,5 @@
 """
-Day-6 counterfactual dataset generator tests.
+Counterfactual dataset generator tests.
 
 Uses a smaller n_subscriptions than the real data/raw output for speed, same
 convention as tests/test_dataset_generation.py.
@@ -98,7 +98,7 @@ def test_reproducibility_same_seed_produces_identical_counterfactual_data(base_d
 
 
 def test_candidate_timing_affects_latent_outcomes(counterfactual, base_dataset):
-    """The core Day-6 causal requirement: candidate_type must not be inert --
+    """The core causal requirement: candidate_type must not be inert --
     different candidates for the SAME event must get different latent
     probabilities at least some of the time (not a constant offset, and not
     always the same winner)."""

@@ -1,10 +1,10 @@
 """
-Day-2 deterministic failure classifier.
+Deterministic failure classifier.
 
 raw_events.error_reason -> bucket, matched only against reason strings that
 are independently verified — never guessed. Two sources:
 
-  1. This repo's own Day-1 fixture (tests/conftest.py) and this task's spec,
+  1. This repo's own fixture (tests/conftest.py) and this task's spec,
      which use `insufficient_fund` (singular) — the field name real Razorpay
      payment.entity webhook payloads carry.
   2. Razorpay's official "list of possible error reasons" spreadsheet,

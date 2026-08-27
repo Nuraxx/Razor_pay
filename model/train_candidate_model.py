@@ -1,5 +1,5 @@
 """
-Day-6 candidate-aware training entry point.
+Candidate-aware training entry point.
 
     ./venv/bin/python model/train_candidate_model.py
 
@@ -8,8 +8,8 @@ Structurally identical to model/train.py (same imputer -> LogReg -> CatBoost
 trained on the candidate-level table (model/candidate_preprocessing.py) so
 the resulting model answers a genuinely different question:
 
-    Day 4:  P(recovered_within_14d | failure/customer context)
-    Day 6:  P(recovered_within_14d | failure/customer context, candidate retry action)
+    Calibrated model:      P(recovered_within_14d | failure/customer context)
+    Candidate-aware model: P(recovered_within_14d | failure/customer context, candidate retry action)
 
 `fit_pipeline(train_df, val_df)` takes no test data -- test is loaded and
 immediately discarded in main(), read only by

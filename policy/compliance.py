@@ -1,13 +1,13 @@
 """
-Day-12 deterministic compliance gate.
+Deterministic compliance gate.
 
-Sits BETWEEN policy selection (policy/decision_engine_v4.py, Day 10 --
-completely unmodified today) and execution (payment retry / LLM
-communication, Day 11). No ML, no LLM, no randomness -- same "deterministic,
-explainable" design as policy/guardrails.py (Day 5), which this module
+Sits BETWEEN policy selection (policy/decision_engine_v4.py, policy-v4 --
+completely unmodified here) and execution (payment retry / LLM
+communication). No ML, no LLM, no randomness -- same "deterministic,
+explainable" design as policy/guardrails.py, which this module
 reuses rather than reimplements wherever the same check applies.
 
-IMPORTANT WORDING (required verbatim by the brief, also in README "Day 12"):
+IMPORTANT WORDING (required verbatim by the brief, also in README §18):
 Compliance checks in this prototype are deterministic project guardrails.
 They are not presented as a complete legal/regulatory compliance
 implementation. Every rule below is either (a) a guardrail this project
@@ -53,8 +53,8 @@ class ComplianceContext:
     selected_candidate_datetime: datetime | None
     failure_timestamp: datetime
     attempts_so_far: int
-    payment_already_decided: bool = False  # a policy_decisions row for this event_id already existed (Day 5-10 idempotency)
-    communication_already_sent: bool = False  # an llm_invocations row for this event_id + task already existed (Day 11 idempotency, applied at the compliance layer)
+    payment_already_decided: bool = False  # a policy_decisions row for this event_id already existed (policy-layer idempotency)
+    communication_already_sent: bool = False  # an llm_invocations row for this event_id + task already existed (LLM-layer idempotency, applied at the compliance layer)
     customer_opted_out: bool = False  # PROJECT guardrail: an explicit opt-out signal (not derived from classification alone -- see evaluate_compliance)
     consent_for_communication: bool = True  # PROJECT guardrail placeholder: no real consent-tracking system exists in this project yet; defaults to True (not gated) unless the caller has an actual reason to set it False. Documented, not invented as a legal requirement.
     required_fields_present: bool = True  # event_id / subscription_id / amount / etc. are all non-null

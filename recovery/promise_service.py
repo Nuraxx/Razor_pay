@@ -2,7 +2,7 @@
 Promise-to-pay: customer reply -> parse -> validate -> persist.
 
     customer_reply_text
-        -> llm/service.py::parse_promise_to_pay_and_log   (Day 11, reused as-is,
+        -> llm/service.py::parse_promise_to_pay_and_log   (reused as-is,
            already fail-safe/audited -- see that module for LLM failure handling)
         -> policy/promise_to_pay.py::validate_promise      (deterministic, new)
         -> app.models.PromiseToPay row                     (persisted, new)

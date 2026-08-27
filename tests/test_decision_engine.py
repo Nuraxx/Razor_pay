@@ -1,8 +1,8 @@
 """
-Day-9 decision-engine tests: net-value scoring, abstention, fallback,
+policy-v3 decision-engine tests: net-value scoring, abstention, fallback,
 guardrails, audit logging, idempotency, serialization, and failure modes.
 
-Uses a small synthetic dataset + a freshly-fit Day-8 Model B (not the
+Uses a small synthetic dataset + a freshly-fit Model B (not the
 committed model/latent_target_artifacts/) for realistic end-to-end tests,
 same pattern as tests/test_latent_target_model.py, plus hand-crafted fake
 model objects to exercise specific failure modes deterministically.
@@ -38,7 +38,7 @@ from policy.retry_candidates import CANDIDATE_TYPES
 
 TEST_SEED = 42
 TEST_N = 120
-FAILURE_TS = datetime(2026, 2, 24, 10, 0, 0)  # all 5 candidates valid (verified in Day-7 tests too)
+FAILURE_TS = datetime(2026, 2, 24, 10, 0, 0)  # all 5 candidates valid (verified in the ranking-model tests too)
 
 FAILURE_CONTEXT = {
     "day_of_month": 24, "days_to_nearest_payday_window": 6, "prior_if_failure_count": 0,

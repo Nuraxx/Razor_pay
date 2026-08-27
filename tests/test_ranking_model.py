@@ -1,5 +1,5 @@
 """
-Day-7 pairwise ranking model tests.
+Pairwise ranking model tests.
 
 Uses a small synthetic dataset generated fresh (not the committed
 data/raw/*.csv) so these tests are fast and self-contained -- same pattern

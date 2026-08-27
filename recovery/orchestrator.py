@@ -1,14 +1,14 @@
 """
-Day-12 end-to-end recovery orchestrator -- the single place that wires
-together every previous day's module in the order the brief specifies:
+End-to-end recovery orchestrator -- the single place that wires
+together every earlier module in the order the brief specifies:
 
     failure_event
-        -> classification            (classification/rules.py, Day 2, reused as-is)
-        -> policy decision           (policy/decision_engine_v4.py, Day 10, reused as-is)
+        -> classification            (classification/rules.py, reused as-is)
+        -> policy decision           (policy/decision_engine_v4.py, policy-v4, reused as-is)
         -> promise-to-pay override   (recovery/promise_service.py, new -- see below)
-        -> compliance gate           (policy/compliance.py, Day 12, reused as-is)
+        -> compliance gate           (policy/compliance.py, reused as-is)
         -> payment action            (recorded, never actually executed -- no live Razorpay calls)
-        -> LLM communication         (llm/service.py, Day 11, reused as-is -- ONLY if compliance allows it)
+        -> LLM communication         (llm/service.py, reused as-is -- ONLY if compliance allows it)
         -> audit trail               (app.models.AuditLog, actor values: classifier/policy/promise/compliance/llm/orchestrator)
 
 This module contains NO decision logic of its own -- it does not classify,
@@ -18,7 +18,7 @@ the modules that already do those things and assembling their outputs into
 one `recovery.schemas.RecoveryExecutionResult`. See that module's docstring
 for the `final_status` precedence rules.
 
-THE LLM CANNOT AFFECT THE PAYMENT DECISION: `policy_row` (the Day-10
+THE LLM CANNOT AFFECT THE PAYMENT DECISION: `policy_row` (the policy-v4
 decision) is fully computed and persisted BEFORE any LLM code runs, and
 nothing below ever reads an LLM result back into a policy/compliance field.
 An LLM failure only changes `communication_action` / `llm_success` /
@@ -188,10 +188,10 @@ def orchestrate_recovery(
     """The single entry point (brief section 4). `model` / `llm_client` are
     injectable purely for testing/offline use (same pattern as
     policy/decision_engine_v4.py and llm/service.py already establish) --
-    production code can omit both and get the real Day-8 Model B / the
+    production code can omit both and get the real Model B / the
     configured LLM_PROVIDER."""
 
-    # --- 1. Classification (Day 2, reused as-is) ------------------------
+    # --- 1. Classification (reused as-is) --------------------------------
     classification = classify(event.error_code, event.error_reason, event.error_source, event.error_step)
     db.add(
         AuditLog(
@@ -203,7 +203,7 @@ def orchestrate_recovery(
     )
     db.commit()
 
-    # --- 2. Policy decision (Day 10, reused as-is; already idempotent & ---
+    # --- 2. Policy decision (policy-v4, reused as-is; already idempotent & ---
     # --- self-auditing -- see policy/decision_engine_v4.py::decide_for_failure_event_engine_v4) ---
     policy_row, policy_created = decide_for_failure_event_engine_v4(
         db, event_id=event.event_id, subscription_id=event.subscription_id, failure_timestamp=event.failure_timestamp,
@@ -280,7 +280,7 @@ def orchestrate_recovery(
     else:
         payment_action = "blocked"
 
-    # --- 5. LLM communication (Day 11, reused as-is) -- ONLY when either ---
+    # --- 5. LLM communication (reused as-is) -- ONLY when either ---------
     # --- a real retry is proceeding, OR this is a hard_decline event (the ---
     # --- specification's payment-method-update nudge -- customer_cancelled ---
     # --- and unmapped never reach here: compliance's opt-out-on-cancellation ---

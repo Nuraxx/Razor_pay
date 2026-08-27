@@ -1,6 +1,6 @@
 """
 classification/service.py tested against a real (in-memory) DB session --
-reuses the same test_db_session fixture Day 1 defined in tests/conftest.py.
+reuses the same test_db_session fixture defined in tests/conftest.py.
 """
 from app.models import AuditLog, FailureEvent, RawEvent
 from classification.rules import HARD_DECLINE, RETRYABLE_SOFT, RULE_VERSION, UNMAPPED
@@ -53,7 +53,7 @@ def test_classify_raw_event_creates_failure_event_and_audit_log(test_db_session)
 
 
 def test_example_insufficient_fund_classification_end_to_end(test_db_session):
-    """The exact example from the Day-2 spec: insufficient_fund -> retryable_soft, confidence 1.0."""
+    """The exact example from the classification spec: insufficient_fund -> retryable_soft, confidence 1.0."""
     db = test_db_session()
     raw_event = _make_raw_event(db, razorpay_event_id="evt_InsufficientFundExample", error_reason="insufficient_fund")
 
@@ -81,7 +81,7 @@ def test_duplicate_classification_does_not_create_second_failure_event(test_db_s
 
 
 def test_duplicate_classification_still_writes_an_audit_log_entry(test_db_session):
-    """Deciding not to re-classify is still a decision -- Day 1's audit_log
+    """Deciding not to re-classify is still a decision -- the audit_log
     convention ("every decision the system makes, including deciding to do
     nothing") applies here too."""
     db = test_db_session()

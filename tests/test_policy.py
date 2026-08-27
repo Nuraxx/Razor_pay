@@ -1,10 +1,10 @@
 """
-Day-5 policy layer tests: candidate generation, scoring, guardrails,
+Policy layer tests: candidate generation, scoring, guardrails,
 baselines, the AI-assisted policy, and its DB-backed audit trail.
 
 Pure-function tests (candidate generation, scoring, guardrails, baselines,
 `decide()`) need no DB. DB-backed tests reuse the `test_db_session` fixture
-Day 1 defined in tests/conftest.py, mirroring tests/test_classification_service.py.
+defined in tests/conftest.py, mirroring tests/test_classification_service.py.
 """
 from datetime import datetime, timedelta
 
@@ -26,7 +26,7 @@ from policy.guardrails import (
 )
 from policy.recovery_policy import NO_ACTION, POLICY_VERSION, decide, decide_for_failure_event
 from policy.retry_candidates import CANDIDATE_TYPES, Candidate, generate_candidates
-from policy.scoring import Day4ModelUnavailable, load_calibrated_model, predict_base_recovery_probability, score_candidate
+from policy.scoring import ScoringModelUnavailable, load_calibrated_model, predict_base_recovery_probability, score_candidate
 
 FAILURE_TS = datetime(2026, 3, 5, 14, 0, 0)
 
@@ -310,13 +310,13 @@ def test_all_candidate_types_score_without_error():
 
 
 # ---------------------------------------------------------------------------
-# 7. Day-4 model integration (uses committed model/artifacts/ if present)
+# 7. Calibrated model integration (uses committed model/artifacts/ if present)
 # ---------------------------------------------------------------------------
 
 def test_base_probability_from_real_calibrated_model_stays_within_unit_interval():
     try:
         model, imputer = load_calibrated_model()
-    except Day4ModelUnavailable:
+    except ScoringModelUnavailable:
         pytest.skip("model/artifacts/ not present -- run model/train.py first")
 
     import pandas as pd

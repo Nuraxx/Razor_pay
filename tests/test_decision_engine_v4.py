@@ -1,10 +1,10 @@
 """
-Day-10 tests: fallback-advantage arithmetic, validation-only configuration
+policy-v4 tests: fallback-advantage arithmetic, validation-only configuration
 search, the four fallback modes, edge cases (brief section 8), guardrails,
 idempotency, audit logging, config/version propagation, and determinism.
 
-Reuses the exact fixture pattern from tests/test_decision_engine.py (Day 9):
-a small synthetic dataset + a freshly-fit Day-8 Model B for realistic
+Reuses the exact fixture pattern from tests/test_decision_engine.py (policy-v3):
+a small synthetic dataset + a freshly-fit Model B for realistic
 end-to-end tests, plus hand-crafted fake model objects for deterministic
 failure-mode testing.
 """
@@ -44,7 +44,7 @@ from policy.retry_candidates import CANDIDATE_TYPES
 
 TEST_SEED = 42
 TEST_N = 120
-FAILURE_TS = datetime(2026, 2, 24, 10, 0, 0)  # all 5 candidates valid (established Day 7/9)
+FAILURE_TS = datetime(2026, 2, 24, 10, 0, 0)  # all 5 candidates valid (established convention)
 
 FAILURE_CONTEXT = {
     "day_of_month": 24, "days_to_nearest_payday_window": 6, "prior_if_failure_count": 0,
@@ -125,7 +125,7 @@ def test_rule_has_clear_advantage_gate_respects_threshold():
 # Structural finding regression test: with a real Model-B-scores-every-
 # candidate flow, Rule-Based's own candidate can never beat Model B's own
 # global best -- so KEEP_IF_BETTER / KEEP_UNLESS_CLEAR must always retain
-# the model in that flow. This is the documented Day-10 diagnosis finding;
+# the model in that flow. This is the documented policy-v4 diagnosis finding;
 # pin it so a future change can't silently reintroduce a different, buggier
 # behaviour without a test noticing.
 # ---------------------------------------------------------------------------
@@ -146,7 +146,7 @@ def test_evidence_based_modes_never_beat_models_own_global_best(real_model, late
         if not valid_scores:
             continue
         assert max(valid_scores) == pytest.approx(max(valid_scores))  # sanity
-        # decision_source must be day8_model_b (never fallback) since the gate can't fire
+        # decision_source must be subscription_value_model (never fallback) since the gate can't fire
         assert d.decision_source in (SOURCE_MODEL, SOURCE_NO_ACTION)
 
 
@@ -189,7 +189,7 @@ def test_keep_if_better_and_keep_unless_clear_retain_model_when_margin_ambiguous
 
 
 def test_rule_clearly_better_than_model_is_structurally_impossible_via_full_flow():
-    """Documents (rather than merely asserting) the Day-10 structural
+    """Documents (rather than merely asserting) the policy-v4 structural
     finding: since Rule-Based always picks from the same candidate pool
     Model B scores in full, "rule clearly better than model" can only be
     exercised at the pure fallback_advantage() function level (see the
@@ -251,7 +251,7 @@ def test_no_positive_net_value_on_ambiguous_keep_model_path_is_no_action():
 
 
 # ---------------------------------------------------------------------------
-# Guardrails (unchanged from Day 5-9, verified still enforced in v4)
+# Guardrails (unchanged from earlier policy versions, verified still enforced in v4)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("bucket", ["hard_decline", "customer_cancelled", "unmapped"])
@@ -528,17 +528,17 @@ def test_max_retry_attempts_enforced_across_v4_db_calls(test_db_session):
 # ---------------------------------------------------------------------------
 
 def test_configuration_search_uses_only_validation_data(latent_splits, real_model):
-    from evaluation.evaluate_decision_engine_v4 import MARGIN_THRESHOLD_CANDIDATES, select_day10_configuration_on_validation
+    from evaluation.evaluate_decision_engine_v4 import MARGIN_THRESHOLD_CANDIDATES, select_validation_configuration
 
     _train, val_df, test_df = latent_splits
-    chosen, results = select_day10_configuration_on_validation(val_df, real_model)
+    chosen, results = select_validation_configuration(val_df, real_model)
     assert chosen["margin_threshold"] in MARGIN_THRESHOLD_CANDIDATES
     assert chosen["fallback_mode"] in FALLBACK_MODES
     assert len(results) > 0
     # structural check: the function signature only accepts val_df, never test_df
     import inspect
 
-    params = list(inspect.signature(select_day10_configuration_on_validation).parameters)
+    params = list(inspect.signature(select_validation_configuration).parameters)
     assert "test_df" not in params and "test" not in params
 
 
@@ -550,10 +550,10 @@ def test_configuration_search_selects_best_by_total_realized_value(latent_splits
     # metrics are still reported for every configuration; only realized is
     # asserted to be optimal here, since latent and realized can legitimately
     # disagree (that disagreement is exactly what this correction fixed).
-    from evaluation.evaluate_decision_engine_v4 import select_day10_configuration_on_validation
+    from evaluation.evaluate_decision_engine_v4 import select_validation_configuration
 
     _train, val_df, _test_df = latent_splits
-    chosen, results = select_day10_configuration_on_validation(val_df, real_model)
+    chosen, results = select_validation_configuration(val_df, real_model)
     chosen_key = next(k for k, r in results.items() if r["margin_threshold"] == chosen["margin_threshold"] and r["fallback_mode"] == chosen["fallback_mode"] and r["fallback_advantage_threshold"] == chosen["fallback_advantage_threshold"])
     chosen_value = results[chosen_key]["total_realized_value_selected_rs"]
     assert all(chosen_value >= r["total_realized_value_selected_rs"] for r in results.values())
@@ -574,24 +574,24 @@ def test_oracle_realized_value_is_never_below_the_deployed_policy(latent_splits,
     # Oracle must be AT LEAST as good as every other policy on realized Rs,
     # by construction, once it is scored with the SAME multi-attempt
     # machinery (see evaluate_events_v4's oracle_schedule).
-    from evaluation.evaluate_decision_engine_v4 import evaluate_events_v4, select_day10_configuration_on_validation
+    from evaluation.evaluate_decision_engine_v4 import evaluate_events_v4, select_validation_configuration
 
     _train, val_df, test_df = latent_splits
-    chosen_config, _results = select_day10_configuration_on_validation(val_df, real_model)
+    chosen_config, _results = select_validation_configuration(val_df, real_model)
     events = evaluate_events_v4(test_df, real_model, chosen_config)
 
     oracle_total = events["oracle_policy__realized_amount_recovered"].sum()
-    for policy_name in ("fixed_retry", "rule_based", "day8_model_b_alone", "day9_original_fallback", "day10_improved_fallback"):
+    for policy_name in ("fixed_retry", "rule_based", "model_b_alone", "original_fallback_policy", "improved_fallback_policy"):
         assert oracle_total >= events[f"{policy_name}__realized_amount_recovered"].sum(), (
             f"oracle_policy scored below {policy_name} -- Oracle is no longer a valid upper bound"
         )
 
 
 def test_oracle_schedule_never_exceeds_max_retry_attempts(latent_splits, real_model):
-    from evaluation.evaluate_decision_engine_v4 import evaluate_events_v4, select_day10_configuration_on_validation
+    from evaluation.evaluate_decision_engine_v4 import evaluate_events_v4, select_validation_configuration
     from policy.guardrails import MAX_RETRY_ATTEMPTS
 
     _train, val_df, test_df = latent_splits
-    chosen_config, _results = select_day10_configuration_on_validation(val_df, real_model)
+    chosen_config, _results = select_validation_configuration(val_df, real_model)
     events = evaluate_events_v4(test_df, real_model, chosen_config)
     assert (events["oracle_policy__n_attempts"] <= MAX_RETRY_ATTEMPTS).all()

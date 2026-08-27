@@ -4,7 +4,7 @@ subscription payment-failure event's own pre-computed Fixed-Retry-style
 retry schedule (policy/decision_engine_v4.py::build_retry_schedule_from_decision,
 persisted on policy_decisions.retry_schedule_json at decision time) one step
 at a time, as each step's scheduled datetime arrives -- exactly the
-capability the evaluation-side economic finding (README "Day 10:
+capability the evaluation-side economic finding (README "policy-v4:
 multi-attempt persistence") measured, now wired into the live path so the
 capability the evaluation credits is the SAME one the live system runs, not
 an evaluation-only fiction.

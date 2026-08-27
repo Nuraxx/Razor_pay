@@ -1,14 +1,15 @@
 """
-Day-8 target construction: fixing the OBJECTIVE, not adding another model.
+Latent-target construction: fixing the OBJECTIVE, not adding another model.
 
-Day 7's root-cause finding: `recovered_within_14d` is a single noisy
-Bernoulli realization of a latent probability, further confounded by
+The ranking model's root-cause finding: `recovered_within_14d` is a single
+noisy Bernoulli realization of a latent probability, further confounded by
 14-day horizon truncation. A model can get measurably better at predicting
 that noisy/confounded target without that improvement transferring to
-agreement with the true underlying preference ordering. Day 6's own
-synthetic generator already computed a continuous latent probability for
-every candidate (`data/generate_counterfactual_dataset.py`) -- Day 8 trains
-directly against THAT, instead of against its noisy sample.
+agreement with the true underlying preference ordering. The candidate-aware
+model's own synthetic generator already computed a continuous latent
+probability for every candidate (`data/generate_counterfactual_dataset.py`)
+-- this module trains directly against THAT, instead of against its noisy
+sample.
 
 THREE DISTINCT CONCEPTS -- documented explicitly per the brief, never
 treated as interchangeable:
@@ -17,7 +18,8 @@ treated as interchangeable:
      A noisy Bernoulli REALIZATION: one coin-flip per (event, candidate),
      sampled from the latent probability, further constrained to False
      whenever the candidate's own scheduled time falls beyond the 14-day
-     recovery horizon. This is what Day 6/7 trained against.
+     recovery horizon. This is what the candidate-aware and ranking models
+     trained against.
 
   B. LATENT RECOVERY PROBABILITY -- `recovery_probability_latent`
      The synthetic GROUND TRUTH the generator itself computed before
@@ -29,7 +31,7 @@ treated as interchangeable:
      = recovery_probability_latent * amount. The synthetic ground-truth
      ECONOMIC objective: not "how likely is this candidate to recover" but
      "how many rupees do we expect this candidate to recover." This is what
-     the hackathon track actually cares about, and is Day 8's PRIMARY
+     the hackathon track actually cares about, and is this module's PRIMARY
      ranking target (brief section 2/5).
 
 IMPORTANT -- why (B) and (C) are legitimate SYNTHETIC BENCHMARK TARGETS but
@@ -39,11 +41,11 @@ data generator (data/generate_counterfactual_dataset.py) used to draw (A).
 Training against it here is training against a KNOWN, SELF-AUTHORED ground
 truth for benchmarking purposes -- legitimate for measuring "how good could
 a candidate-ranking model be, in principle, on this synthetic environment,"
-exactly as an oracle upper bound already does (Day 6/7). It is NOT a claim
+exactly as an oracle upper bound already does. It is NOT a claim
 that recovery_probability_latent is observable, computable, or available in
 any real Razorpay deployment -- a production system has no such column and
 would need an equivalent OBSERVABLE target built from historical retries
-and their outcomes (see README "Day 8" for the explicit statement of this).
+and their outcomes (see README §16 for the explicit statement of this).
 It must never appear as a model INPUT feature (that would be the hidden
 archetype leaking through a back door) -- see EXCLUDED_COLUMNS below, which
 documents both new latent columns as excluded for exactly this reason.
@@ -63,11 +65,11 @@ from model.ranking_preprocessing import (  # noqa: F401 -- re-exported for train
     build_candidate_level_dataset,
     split_candidate_dataset,
 )
-from model.ranking_preprocessing import EXCLUDED_COLUMNS as _DAY7_EXCLUDED_COLUMNS
+from model.ranking_preprocessing import EXCLUDED_COLUMNS as _RANKING_MODEL_EXCLUDED_COLUMNS
 
 RECOVERY_HORIZON_DAYS = 14
 
-# Column (A): the noisy observed outcome Day 6/7 trained against.
+# Column (A): the noisy observed outcome the candidate-aware and ranking models trained against.
 OBSERVED_OUTCOME_COLUMN = "recovered_within_14d"
 # Column (B): synthetic ground-truth latent probability -- Model A's target.
 LATENT_PROBABILITY_COLUMN = "recovery_probability_latent"
@@ -79,12 +81,12 @@ TARGET_COLUMNS = {"probability": LATENT_PROBABILITY_COLUMN, "value": LATENT_VALU
 
 # Both new latent columns, plus the rate alias, are excluded from
 # FEATURE_COLUMNS exactly like recovery_probability_latent already was in
-# Day 6/7 -- see model/candidate_preprocessing.py::EXCLUDED_COLUMNS.
-EXCLUDED_COLUMNS = dict(_DAY7_EXCLUDED_COLUMNS)
+# the candidate-aware/ranking models -- see model/candidate_preprocessing.py::EXCLUDED_COLUMNS.
+EXCLUDED_COLUMNS = dict(_RANKING_MODEL_EXCLUDED_COLUMNS)
 EXCLUDED_COLUMNS.update(
     {
         LATENT_VALUE_COLUMN: (
-            "Day-8 SYNTHETIC BENCHMARK TARGET (Model B's y) -- recovery_probability_latent * amount. "
+            "SYNTHETIC BENCHMARK TARGET (Model B's y) -- recovery_probability_latent * amount. "
             "Ground truth only because this project's own generator authored it; never a production feature."
         ),
         LATENT_RATE_COLUMN: (
@@ -93,7 +95,7 @@ EXCLUDED_COLUMNS.update(
         ),
     }
 )
-assert LATENT_PROBABILITY_COLUMN in EXCLUDED_COLUMNS  # inherited from Day 6/7 -- re-asserted here so this module fails loudly if that ever changes
+assert LATENT_PROBABILITY_COLUMN in EXCLUDED_COLUMNS  # inherited from the candidate-aware/ranking models -- re-asserted here so this module fails loudly if that ever changes
 
 
 def add_latent_targets(df: pd.DataFrame) -> pd.DataFrame:
@@ -138,7 +140,7 @@ def build_candidate_level_dataset_with_latent_targets() -> pd.DataFrame:
 def select_features_and_target(df: pd.DataFrame, target: str) -> tuple[pd.DataFrame, pd.Series]:
     """target: 'probability' -> Model A's y (recovery_probability_latent);
     'value' -> Model B's y (expected_recovery_value_latent). Selecting
-    FEATURE_COLUMNS here is identical to Day 7's -- the feature set is
+    FEATURE_COLUMNS here is identical to the ranking model's -- the feature set is
     unchanged, only the target differs. Boolean features are cast to 0/1
     int HERE (once), so downstream callers never need to re-detect them."""
     if target not in TARGET_COLUMNS:

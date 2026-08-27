@@ -1,16 +1,16 @@
 """
-Day-7 diagnosis: why did Day 6's candidate-aware model fail at within-event
+Diagnosis: why did the candidate-aware model fail at within-event
 ranking despite a good pooled ROC-AUC?
 
     ./venv/bin/python model/diagnose_ranking_failure.py
 
-Reproduces every number cited in README "Day 7: diagnosis". Written BEFORE
-model/train_ranking_model.py, per the brief's explicit instruction to
-diagnose before implementing a fix -- see README for the full narrative;
-this script only recomputes the evidence.
+Written BEFORE model/train_ranking_model.py, per the brief's explicit
+instruction to diagnose before implementing a fix -- this script only
+recomputes the evidence.
 
-Requires model/candidate_artifacts/ (Day 6's trained model) and
-data/raw/counterfactual_outcomes.csv (Day 6's dataset) to already exist.
+Requires model/candidate_artifacts/ (the candidate-aware model's trained
+artifact) and data/raw/counterfactual_outcomes.csv (the counterfactual
+layer's dataset) to already exist.
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ import pandas as pd
 from scipy.stats import spearmanr
 
 from model.candidate_preprocessing import build_candidate_level_dataset, load_candidate_splits, prepare_for_catboost, select_features_and_target
-from policy.scoring import Day4ModelUnavailable, load_candidate_aware_model
+from policy.scoring import ScoringModelUnavailable, load_candidate_aware_model
 
 
 def diagnose_feature_importance() -> pd.DataFrame:
@@ -103,14 +103,14 @@ def diagnose_true_signal_within_horizon() -> dict:
 
 
 def main() -> None:
-    print("=== Day-7 diagnosis: why did Day 6 fail at within-event ranking? ===\n")
+    print("=== Diagnosis: why did the candidate-aware model fail at within-event ranking? ===\n")
 
     try:
         fi = diagnose_feature_importance()
-    except Day4ModelUnavailable as exc:
+    except ScoringModelUnavailable as exc:
         raise SystemExit(f"{exc}\nRun model/train_candidate_model.py first.") from exc
 
-    print("1/2/4. Day-6 feature importance (top 10) -- hours_from_failure dominance:")
+    print("1/2/4. Candidate-aware model feature importance (top 10) -- hours_from_failure dominance:")
     print(fi.head(10).to_string(index=False))
     print()
 
@@ -130,7 +130,7 @@ def main() -> None:
     print("3. True signal, isolated from the horizon-truncation confound:")
     print(f"   within-horizon rows: {signal['n_rows_within_horizon']}/{signal['n_rows_total']}")
     print(f"   within-event corr(candidate_days_to_payday, latent), horizon-valid only: {signal['within_event_corr_days_to_payday_vs_latent']:.4f} (n_events={signal['n_events_used']})")
-    print(f"   -> a real but weak signal, consistent with Day-6's measured -0.149 being an anti-correlation, not just noise")
+    print(f"   -> a real but weak signal, consistent with the candidate-aware model's measured -0.149 being an anti-correlation, not just noise")
 
 
 if __name__ == "__main__":

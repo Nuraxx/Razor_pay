@@ -1,5 +1,5 @@
 """
-Day-2 CLI: classify existing raw_events into failure_events without needing
+CLI: classify existing raw_events into failure_events without needing
 a live Razorpay webhook — reads directly from the configured DATABASE_URL.
 
 Usage (from the project root):
@@ -21,7 +21,7 @@ from classification.service import classify_all_raw_events, classify_raw_event
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Classify raw_events into failure_events (Day 2, deterministic, idempotent)."
+        description="Classify raw_events into failure_events (deterministic, idempotent)."
     )
     parser.add_argument(
         "--raw-event-id",

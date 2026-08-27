@@ -1,9 +1,9 @@
 """
-Day-9 decision-engine evaluation.
+policy-v3 decision-engine evaluation.
 
     ./venv/bin/python evaluation/evaluate_decision_engine.py
 
-"SYNTHETIC COUNTERFACTUAL EVALUATION" -- same disclaimer as Day 6/7/8: every
+"SYNTHETIC COUNTERFACTUAL EVALUATION" -- same disclaimer as the earlier model evaluations: every
 number here comes from data/raw/counterfactual_outcomes.csv, a
 hand-designed simulation. It does not measure real Razorpay recovery
 performance.
@@ -17,7 +17,7 @@ Two phases, strictly ordered (brief section 10/11 -- never tune on test):
      policy/decision_engine.py::DEFAULT_ABSTENTION_THRESHOLD_RS -- this
      script's search REPRODUCES that choice, it does not change it.
   2. TEST evaluation, run once, comparing 5 policies (brief section 10):
-     Fixed Retry, Rule-Based, Day-8 Model B without abstention, Day-9 (Model
+     Fixed Retry, Rule-Based, Model B without abstention, policy-v3 (Model
      B + costs + abstention + fallback), Oracle. Reports LATENT ECONOMIC,
      REALIZED COUNTERFACTUAL, and OPERATIONAL metrics as three explicitly
      separate sections.
@@ -41,7 +41,7 @@ from policy.retry_candidates import Candidate
 
 REPORTS_DIR = PROJECT_ROOT / "evaluation" / "reports"
 THRESHOLD_CANDIDATES = [0, 10, 25, 50, 100, 150, 200, 250]
-POLICY_NAMES = ["fixed_retry", "rule_based", "day8_model_b_no_abstention", "day9_decision_engine", "oracle_policy"]
+POLICY_NAMES = ["fixed_retry", "rule_based", "model_b_no_abstention", "policy_v3", "oracle_policy"]
 
 EVENT_FEATURE_KEYS = [
     "day_of_month", "days_to_nearest_payday_window", "prior_if_failure_count", "prior_if_self_resolved_rate",
@@ -97,8 +97,8 @@ def select_abstention_threshold_on_validation(val_df: pd.DataFrame, model: dict)
     """VALIDATION-ONLY search (brief section 11) -- test is never touched
     here. Scores each candidate threshold by total LATENT net value
     (economic ground truth, legitimate for offline threshold tuning --
-    same reasoning as Day 8's evaluation) selected across all validation
-    events; picks the argmax."""
+    same reasoning as Model B's own evaluation) selected across all
+    validation events; picks the argmax."""
     results = {}
     for threshold in THRESHOLD_CANDIDATES:
         run = _run_decision_engine_for_all_events(val_df, model, float(threshold))
@@ -127,13 +127,13 @@ def evaluate_events(test_df: pd.DataFrame, model: dict, frozen_threshold: float)
         fixed_sel = fixed_retry_baseline(event_id, subscription_id, failure_timestamp, amount, classification_bucket, 0.0)["selected_candidate_type"]
         rule_sel = rule_based_baseline(event_id, subscription_id, failure_timestamp, amount, classification_bucket, 0.0)["selected_candidate_type"]
         no_abstention_decision = decide_engine(event_id, subscription_id, failure_timestamp, amount, classification_bucket, _event_context(first), costs=DEFAULT_COSTS, abstention_threshold=-math.inf, model=model)
-        day9_decision = decide_engine(event_id, subscription_id, failure_timestamp, amount, classification_bucket, _event_context(first), costs=DEFAULT_COSTS, abstention_threshold=frozen_threshold, model=model)
+        original_fallback_decision = decide_engine(event_id, subscription_id, failure_timestamp, amount, classification_bucket, _event_context(first), costs=DEFAULT_COSTS, abstention_threshold=frozen_threshold, model=model)
         oracle_sel = max((ct for ct, valid in valid_mask.items() if valid), key=lambda ct: latent_value[ct], default=NO_ACTION)
 
         selections = {
             "fixed_retry": fixed_sel, "rule_based": rule_sel,
-            "day8_model_b_no_abstention": no_abstention_decision.selected_candidate_type,
-            "day9_decision_engine": day9_decision.selected_candidate_type,
+            "model_b_no_abstention": no_abstention_decision.selected_candidate_type,
+            "policy_v3": original_fallback_decision.selected_candidate_type,
             "oracle_policy": oracle_sel,
         }
         for policy_name in POLICY_NAMES:
@@ -143,10 +143,10 @@ def evaluate_events(test_df: pd.DataFrame, model: dict, frozen_threshold: float)
             record[f"{policy_name}__realized_amount_recovered"] = float(realized_amount.get(selected, 0.0)) if selected != NO_ACTION else 0.0
             record[f"{policy_name}__latent_value_selected"] = float(latent_value.get(selected, 0.0)) if selected != NO_ACTION else 0.0
 
-        record["day9__decision_source"] = day9_decision.decision_source
-        record["day9__decision_margin"] = day9_decision.decision_margin
-        record["day9__is_no_action"] = day9_decision.selected_candidate_type == NO_ACTION
-        record["day9__is_fallback"] = day9_decision.decision_source == SOURCE_FALLBACK
+        record["policy_v3__decision_source"] = original_fallback_decision.decision_source
+        record["policy_v3__decision_margin"] = original_fallback_decision.decision_margin
+        record["policy_v3__is_no_action"] = original_fallback_decision.selected_candidate_type == NO_ACTION
+        record["policy_v3__is_fallback"] = original_fallback_decision.decision_source == SOURCE_FALLBACK
 
         records.append(record)
 
@@ -180,10 +180,10 @@ def summarize_realized(events: pd.DataFrame) -> dict:
 
 def summarize_operational(events: pd.DataFrame) -> dict:
     n = len(events)
-    n_actions = int((events["day9_decision_engine__selected_candidate_type"] != NO_ACTION).sum())
+    n_actions = int((events["policy_v3__selected_candidate_type"] != NO_ACTION).sum())
     n_no_action = n - n_actions
-    n_fallback = int(events["day9__is_fallback"].sum())
-    margins = events["day9__decision_margin"].dropna()
+    n_fallback = int(events["policy_v3__is_fallback"].sum())
+    margins = events["policy_v3__decision_margin"].dropna()
     return {
         "n_events": n,
         "actions_selected": n_actions,
@@ -192,7 +192,7 @@ def summarize_operational(events: pd.DataFrame) -> dict:
         "abstention_count": n_fallback,  # every fallback in this dataset is margin-triggered (model always available) -- see report note
         "average_decision_margin_rs": float(margins.mean()) if len(margins) else None,
         "pct_decisions_using_fallback": round(100 * n_fallback / n, 2) if n else 0.0,
-        "decision_source_distribution": events["day9__decision_source"].value_counts().to_dict(),
+        "decision_source_distribution": events["policy_v3__decision_source"].value_counts().to_dict(),
     }
 
 
@@ -202,7 +202,7 @@ def main() -> None:
     model = load_latent_target_model("value")
     df = build_candidate_level_dataset_with_latent_targets()
     train_df, val_df, test_df = split_candidate_dataset(df)
-    del train_df  # unused here -- decide_engine is not fit on data, only Model B was (already trained, Day 8)
+    del train_df  # unused here -- decide_engine is not fit on data, only Model B was (already trained)
 
     print("=== Phase 1: threshold selection on VALIDATION ONLY ===")
     chosen_threshold, search_results = select_abstention_threshold_on_validation(val_df, model)
@@ -243,7 +243,7 @@ def main() -> None:
         s = realized_summary[name]
         print(f"  {name:28s} recovered=Rs{s['total_recovered_rs']:>10.2f} rate={s['recovery_rate']:.4f} incremental=Rs{s['incremental_rs_vs_fixed_retry']:>+9.2f}")
     print()
-    print("OPERATIONAL (Day-9 decision engine only):")
+    print("OPERATIONAL (policy-v3 decision engine only):")
     for k, v in operational_summary.items():
         print(f"  {k}: {v}")
     print()

@@ -28,9 +28,8 @@ lifecycle with an automatic broken-promise scheduler, Hinglish/voice
 outreach, and a real Razorpay `payment.captured` reconciliation loop that
 closes a recovery case only on an authoritative payment confirmation — see
 [§3a](#3a-track-03-extension-scope) for exactly what that added. Everything
-below this line is a single integrated system, not a day-by-day changelog —
-the full build diary is preserved in the [Appendix](#appendix-day-by-day-development-log)
-for anyone who wants the detailed, dated reasoning behind each decision.
+below this line is described as a single integrated system, by what each
+part does today, not as a chronological changelog.
 
 ---
 
@@ -313,18 +312,17 @@ audit_log + RecoveryOutcome (PENDING until an authoritative payment.captured)
 
 Final pre-submission audit finding: this repository accumulated multiple
 generations of model/policy/decision-engine code across its development
-history (§Appendix). Every one of those still exists (nothing was deleted
-without proof it was obsolete), but only a specific subset is on the LIVE
-call path a real webhook actually walks through today. This section is the
-single source of truth for that distinction — no reviewer should have to
-guess between "v2 / v4 / Day-8 / unified / latent-target / old classifier /
-old policy."
+history. Every one of those still exists (nothing was deleted without proof
+it was obsolete), but only a specific subset is on the LIVE call path a real
+webhook actually walks through today. This section is the single source of
+truth for that distinction — no reviewer should have to guess between
+"v2 / v4 / Model B / unified / latent-target / old classifier / old policy."
 
 **LIVE SUBSCRIPTION PATH** (`payment_failed` / `subscription_payment_failed`
 — a subscription-linked charge):
 - Entrypoint: `app/main.py`'s `/webhook/razorpay` → `recovery/webhook_pipeline.py::process_raw_event`
   → `recovery/orchestrator.py::orchestrate_recovery`
-- Model: **Day-8 Model B** (`model/train_latent_target_model.py`, a CatBoost
+- Model: **Model B** (`model/train_latent_target_model.py`, a CatBoost
   regressor predicting `expected_recovery_value_latent` directly), loaded via
   `policy/decision_engine.py::_load_model_safely`
 - Policy: **`policy-v4`** (`policy/decision_engine_v4.py::decide_for_failure_event_engine_v4`)
@@ -359,18 +357,18 @@ receivable_overdue / promise_to_pay_broken / Payment-Link
 **LEGACY / EXPERIMENTAL — reachable only from evaluation/training scripts and
 tests, never from a live webhook:**
 - `policy/decision_engine.py`'s own `decide_engine()` (POLICY_VERSION
-  `policy-v3`) — Day-9's single-abstention-threshold mechanism, kept only as
-  the `day9_original_fallback` comparison baseline in
+  `policy-v3`) — policy-v3's single-abstention-threshold mechanism, kept only as
+  the `original_fallback_policy` comparison baseline in
   `evaluation/evaluate_decision_engine_v4.py`
 - `model/train_candidate_model.py`, `model/train.py`, `model/calibrate.py` —
-  Day-3/4/6 model iterations, superseded by Day-8's latent-value regressor;
+  early model iterations, superseded by the latent-value regressor (Model B);
   kept for `evaluation/evaluate_models.py`'s historical comparison, never
   loaded by any live decision path
-- `policy/recovery_policy.py::decide_candidate_aware` — the pre-Day-9
+- `policy/recovery_policy.py::decide_candidate_aware` — the pre-policy-v3
   probability-based policy interface, superseded by
   `policy/decision_engine.py`'s value-native interface; exercised only by
   its own historical tests
-- `evaluation/diagnose_day9_fallback.py`, `evaluation/evaluate_decision_engine.py`,
+- `evaluation/diagnose_original_fallback_effect.py`, `evaluation/evaluate_decision_engine.py`,
   `evaluation/evaluate_counterfactual_policy.py`, `evaluation/evaluate_policy.py`,
   `evaluation/evaluate_ranking_policy.py` — one-time or superseded diagnostic
   scripts from earlier days, kept as historical record and reproducibility
@@ -510,9 +508,6 @@ repo works without it.
    you ever need to re-run it manually (e.g. after fixing a downstream bug),
    `./venv/bin/python -m scripts.reprocess_raw_events` is idempotent and safe
    to re-run.
-
-Full troubleshooting table preserved in the
-[Day 1 appendix section](#day-1).
 
 ## 11. LLM configuration
 
@@ -662,15 +657,16 @@ See `tests/test_baseline_fidelity.py`.
 
 **Current model** (the one the live orchestrator and dashboard actually
 use): "Model B", a CatBoost regressor predicting `expected_recovery_value_latent`
-directly (₹, not a probability), selected in Day 8 over five earlier
-model/objective iterations (Day 4's plain classifier, Day 6's candidate-aware
-classifier, Day 7's pairwise ranker, and Model A — a companion probability
-regressor) specifically because it was **the only one of six trained models
-that beat Fixed Retry on the noise-free latent economic ground truth**. The
-full diagnostic trail — including two honestly-reported negative results
-(Day 6/7's ranking models scoring *worse than random* top-1 accuracy) — is
-in the [Appendix](#day-6) and is the strongest evidence in this repo of
-genuine, undodged empirical iteration.
+directly (₹, not a probability), selected over five earlier model/objective
+iterations (a plain calibrated classifier, a candidate-aware classifier, a
+pairwise ranker, and Model A — a companion probability regressor)
+specifically because it was **the only one of six trained models that beat
+Fixed Retry on the noise-free latent economic ground truth**. The full
+diagnostic trail — including two honestly-reported negative results (the
+candidate-aware and pairwise ranking models scoring *worse than random*
+top-1 accuracy) — is in `evaluation/evaluate_ranking_policy.py`'s and
+`model/diagnose_ranking_failure.py`'s own output, and is the strongest
+evidence in this repo of genuine, undodged empirical iteration.
 
 **Headline result, test set (n=60 held-out events), from
 `evaluation/reports/decision_engine_v4_evaluation.json`
@@ -812,10 +808,10 @@ DECISION time before any fee modeling existed — both names are kept,
 documented, never merged). See `tests/test_economics.py`.
 
 Full metric definitions, every intermediate model's numbers (including two
-architectures — Day 6/7's ranking models — that scored *below random* and
-are reported as honest negative results, not hidden), and the full
-diagnostic history are in the Appendix (Days 4, 6–10) and in
-`evaluation/reports/*.json`.
+architectures — the candidate-aware and pairwise ranking models — that
+scored *below random* and are reported as honest negative results, not
+hidden), and the full diagnostic history are in
+`evaluation/reports/*.json` and the relevant `evaluate_*.py` scripts.
 
 ## 16b. Economic correction: subscription decision policy
 
@@ -823,8 +819,8 @@ Final pre-submission audit. Traced the exact mechanism responsible for the
 ₹3,298.87 gap reported in §16 above, fixed it using validation data only,
 and re-ran the frozen held-out TEST split exactly once.
 
-**Root cause (`policy/decision_engine_v4.py`, `evaluation/evaluate_decision_engine_v4.py::select_day10_configuration_on_validation`):**
-the original Day-10 validation search chose its configuration
+**Root cause (`policy/decision_engine_v4.py`, `evaluation/evaluate_decision_engine_v4.py::select_validation_configuration`):**
+the original policy-v4 validation search chose its configuration
 (`margin_threshold=5.0, fallback_mode=ALWAYS_FALLBACK_WHEN_BELOW_MARGIN`) by
 maximizing total **latent** value — a smooth proxy
 (`expected_recovery_value_latent = recovery_probability_latent × amount`).
@@ -841,8 +837,8 @@ Rule-Based's candidate whenever Model B's own top-2 margin is small —
 (`decision_engine_v4_evaluation.json`) report already proved this: the
 substituted candidate was, on average, ₹7.59 *worse* by Model B's own
 valuation, every single time the fallback fired. On the held-out TEST set,
-this cost exactly **₹1,280.95 out of the ₹3,298.87 gap** (`day8_model_b_alone`
-₹21,278.18 vs. the old `day10_improved_fallback` ₹19,997.23) — the
+this cost exactly **₹1,280.95 out of the ₹3,298.87 gap** (`model_b_alone`
+₹21,278.18 vs. the old `improved_fallback_policy` ₹19,997.23) — the
 remainder of the gap (₹2,017.92) is a separate, structural finding (below),
 not fixed by this correction.
 
@@ -869,7 +865,7 @@ gate fires often enough (37/59 validation events, 25/60 test events) that
 refusing to act on all of them forfeits most of the achievable value. Stage
 5 is the exact old mechanism being replaced; stage 6 is what ships now.
 
-**The fix (validation-only, `evaluation/evaluate_decision_engine_v4.py::select_day10_configuration_on_validation`):**
+**The fix (validation-only, `evaluation/evaluate_decision_engine_v4.py::select_validation_configuration`):**
 the search now scores every configuration by BOTH total realized ₹ AND
 total latent ₹ on validation (both legitimate to use — neither ever touches
 test), with realized ₹ as the primary key (ties broken by higher latent
@@ -1036,7 +1032,7 @@ larger held-out population would be needed to confirm significance.
 
 Reproduce: `./venv/bin/python -m evaluation.evaluate_decision_engine_v4`
 (same command as §16b — the multi-attempt schedule is now baked into
-`evaluate_events_v4`'s own `day10_improved_fallback` AND `oracle_policy`
+`evaluate_events_v4`'s own `improved_fallback_policy` AND `oracle_policy`
 scoring, so a single run reflects both). All numbers in this section are
 superseded by §16d's larger-dataset re-run below — kept here as the accurate
 historical record of the 200-subscription state.
@@ -1084,7 +1080,7 @@ did not retune hyperparameters to chase this back down (out of scope, see
 constraints above) — this is exactly why §5 below does not stop at R².
 
 **Candidate ranking (TEST set, ground truth = `expected_recovery_value_latent`,
-`evaluation/evaluate_latent_target_policy.py` Section B, `day8_model_b_value` row):**
+`evaluation/evaluate_latent_target_policy.py` Section B, `model_b_value` row):**
 
 | | 200 subs (old) | 1500 subs (new) |
 |---|---|---|
@@ -1400,14 +1396,15 @@ pytest output as its designed function.
 4. **The deployed model was not built the way the specification's Model 1
    describes.** The specification calls for "a calibrated binary classifier
    predicting P(recover within 14 days | ...)". The project's first
-   attempt at exactly that (Day 4) topped out at test ROC-AUC 0.566 — a
-   weak result honestly diagnosed and reported, not hidden — and after two
-   further iterations (Day 6/7) also failed to beat random guessing on
-   within-event ranking, the project pivoted (Day 8) to a CatBoost
+   attempt at exactly that (the calibrated failure-time-only classifier)
+   topped out at test ROC-AUC 0.566 — a weak result honestly diagnosed and
+   reported, not hidden — and after two further iterations (the
+   candidate-aware and pairwise ranking models) also failed to beat random
+   guessing on within-event ranking, the project pivoted to a CatBoost
    regressor trained directly on the synthetic generator's own latent
    expected-value target, not the noisy observed outcome. This is
-   disclosed thoroughly in the appendix as a deliberate, diagnosed pivot —
-   but it means the deployed model's strong-looking fit (R²=0.7977 test /
+   disclosed thoroughly above as a deliberate, diagnosed pivot — but it
+   means the deployed model's strong-looking fit (R²=0.7977 test /
    0.8459 validation on the current 1,500-subscription population — see
    §16d; this was R²≈0.87 on the earlier 200-subscription population,
    corrected here so this section never again disagrees with the
@@ -1462,7 +1459,7 @@ pytest output as its designed function.
 | Webhook receiver, HMAC verification, idempotent storage | **DONE** — real Razorpay webhook mechanics, tested |
 | Deterministic failure classification | **DONE** |
 | Synthetic dataset (archetypes, probabilistic labels, ID-level split) | **DONE** |
-| Calibrated recovery-likelihood / candidate-time model | **PARTIAL** — a value-regressor (Model B) is deployed and beats baselines on latent value, but loses to Fixed Retry on realized ₹; the spec's originally-scoped "calibrated binary classifier" was attempted (Day 4) but never exceeded weak (0.57) AUC and was superseded. See §16, §19. |
+| Calibrated recovery-likelihood / candidate-time model | **PARTIAL** — a value-regressor (Model B) is deployed and beats baselines on latent value, but loses to Fixed Retry on realized ₹; the spec's originally-scoped "calibrated binary classifier" was attempted (the calibrated failure-time-only classifier) but never exceeded weak (0.57) AUC and was superseded. See §16, §19. |
 | Deterministic compliance gate | **DONE** |
 | Payment action (recorded, never live) | **DONE** |
 | LLM: outreach microcopy | **DONE**, wired into the live orchestrator, including a `hard_decline` payment-method-update nudge (FIX #3) |

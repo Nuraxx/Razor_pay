@@ -1,5 +1,5 @@
 """
-Day-11 versioned prompts -- one system/user prompt pair per LLM job, plus
+Versioned prompts -- one system/user prompt pair per LLM job, plus
 the deterministic mock-provider response router.
 
 Every prompt version below is a frozen string constant. Changing a prompt's

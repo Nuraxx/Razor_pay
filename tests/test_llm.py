@@ -1,5 +1,5 @@
 """
-Day-11 tests: the LLM-assisted communication layer (llm/).
+Tests: the LLM-assisted communication layer (llm/).
 
 Covers, for EVERY one of the 3 jobs (brief section 9): valid structured
 response, schema validation, mock provider, deterministic mock result,
@@ -333,7 +333,7 @@ class TestMockProviderAndSelection:
 
 
 # ---------------------------------------------------------------------------
-# Gemini provider (Day 14) -- never makes a real network call in this suite;
+# Gemini provider -- never makes a real network call in this suite;
 # `google.genai.Client` is monkeypatched with a fake SDK client throughout.
 # ---------------------------------------------------------------------------
 

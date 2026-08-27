@@ -1,5 +1,5 @@
 """
-Day-8 latent-target construction + regression model tests.
+Latent-target construction + regression model tests.
 
 Uses a small synthetic dataset generated fresh (not the committed
 data/raw/*.csv), same pattern as tests/test_candidate_model.py /

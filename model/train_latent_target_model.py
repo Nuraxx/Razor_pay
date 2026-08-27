@@ -1,5 +1,5 @@
 """
-Day-8 latent-target regression training.
+Latent-target regression training.
 
     ./venv/bin/python model/train_latent_target_model.py
 
@@ -15,7 +15,7 @@ is the only script that reads it, matching every prior day's discipline).
 
 NOT a classifier: these targets are continuous (a probability in [0,1] for
 Model A, rupees for Model B) and are fit with regression loss (RMSE), not
-log loss. Per the brief section 9, NO Day-4-style sigmoid/isotonic
+log loss. Per the brief section 9, NO classifier-style sigmoid/isotonic
 calibration is applied here -- that machinery is built for binary
 classifiers and would be a category error on a regression target. If a
 probability-flavored output is later needed for legacy policy plumbing

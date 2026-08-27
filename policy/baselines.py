@@ -1,11 +1,11 @@
 """
-Day-5 baselines -- for comparison against the AI-assisted policy in
+Baselines -- for comparison against the AI-assisted policy in
 evaluation/evaluate_policy.py. All three respect the same classification
 gate as the main policy (retrying a hard-declined or already-cancelled
 subscription doesn't make sense under any policy, naive or not) and the
 same candidate-validity check. None of them tracks max-attempts or
 duplicate-decision state -- those are specifically the AI-assisted policy's
-guardrails (Day-5 brief section 7 frames them under "Our Policy" / section
+guardrails (the brief's section 7 frames them under "Our Policy" / section
 6), not properties of a simple comparison rule evaluated per-event.
 
 IMPORTANT -- `rule_based_baseline` is BOTH an evaluation baseline AND the

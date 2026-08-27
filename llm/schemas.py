@@ -1,5 +1,5 @@
 """
-Day-11 structured LLM output schemas (Pydantic).
+Structured LLM output schemas (Pydantic).
 
 One schema per LLM job's structured result, plus `LLMResult` -- the
 universal envelope every job returns (brief section 3: task name, model

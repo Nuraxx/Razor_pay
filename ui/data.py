@@ -1,22 +1,22 @@
 """
-Day-13/14 dashboard data layer.
+Dashboard data layer.
 
 THREE distinct data sources, never mixed:
 
-  SYNTHETIC BENCHMARK   -- the frozen offline evaluation reports Days 6-10
-                           already computed and wrote to
+  SYNTHETIC BENCHMARK   -- the frozen offline evaluation reports the earlier
+                           model evaluations already computed and wrote to
                            evaluation/reports/*.json -- e.g. "what would
                            Fixed Retry vs. Model B vs. Oracle have scored on
                            the held-out test set." Read-only, never
                            recomputed here. STATIC data/raw/*.csv (the
                            synthetic dataset those reports were computed
                            from) is the same category.
-  DEMO-GENERATED         -- a live run of recovery/orchestrator.py (Day 12,
-                           unmodified) over a sample of REAL generated
+  DEMO-GENERATED         -- a live run of recovery/orchestrator.py
+                           (unmodified) over a sample of REAL generated
                            failure events (data/raw/failure_events.csv +
                            subscriptions.csv), written to a THROWAWAY
                            in-memory SQLite DB, using the real trained
-                           Day-8 Model B. The LLM call is NOT mocked --
+                           Model B. The LLM call is NOT mocked --
                            it goes through the same get_llm_client() every
                            live webhook uses, i.e. whatever settings.LLM_PROVIDER
                            is currently configured to (mock/anthropic/gemini/ollama).
@@ -112,9 +112,9 @@ def _build_failure_context(event_row: pd.Series, sub_row: pd.Series) -> dict:
 
 @st.cache_resource(show_spinner="Running the recovery orchestrator over sample events...")
 def build_demo_database(sample_size: int = DEMO_SAMPLE_SIZE):
-    """Runs recovery/orchestrator.py::orchestrate_recovery (Day 12,
-    unmodified) over a sample of REAL failure events, using the real
-    trained Day-8 Model B if its artifact is present, otherwise falling
+    """Runs recovery/orchestrator.py::orchestrate_recovery (unmodified)
+    over a sample of REAL failure events, using the real
+    trained Model B if its artifact is present, otherwise falling
     back to policy's own model-unavailable path (still a valid, auditable
     outcome -- never a crash). Cached for the lifetime of the Streamlit
     process (st.cache_resource) so re-navigating pages doesn't re-run it.
@@ -1277,7 +1277,7 @@ def get_candidate_breakdown(event_row: pd.Series, sub_row: pd.Series, model) -> 
 
 def _oracle_pick(event_id: str, amount: float, valid_types: set[str]) -> str | None:
     """Oracle = argmax latent value AMONG VALID candidates only -- matching
-    Day 9/10's own oracle definition (evaluation/evaluate_decision_engine_v4.py),
+    policy-v3/10's own oracle definition (evaluation/evaluate_decision_engine_v4.py),
     not merely the argmax over every row in counterfactual_outcomes.csv."""
     outcomes = load_csv("counterfactual_outcomes.csv")
     if outcomes is None or not valid_types:

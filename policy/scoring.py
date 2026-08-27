@@ -1,42 +1,44 @@
 """
-Day-5 candidate scoring.
+Candidate scoring.
 
-IMPORTANT MODELING HONESTY NOTE (see also README "Day 5" and section 12 of
-the Day-5 brief this module implements):
+IMPORTANT MODELING HONESTY NOTE (see also README §16 and section 12 of
+the brief this module implements):
 
-Day 4's calibrated CatBoost model was trained ONLY on failure-time/customer
-features (model/preprocessing.py::FEATURE_COLUMNS) -- it has never seen a
-candidate retry time as an input. Day 3's synthetic dataset records exactly
-ONE observed outcome per failure event, not what would have happened under
-each of the 5 candidate retry times -- there is no genuine counterfactual
-label to train a true candidate-aware model against, and fabricating one
-(e.g. by pretending the single observed outcome "belongs" to whichever
-candidate its timestamp happens to be closest to) would misrepresent
-correlation for a candidate we didn't actually simulate as causal evidence
-for it. So this module does NOT retrain or repurpose the Day-4 model to
-"predict conditional on candidate time" -- that would be Option A from the
-brief, and it isn't defensible with this dataset.
+The calibrated failure-time-only CatBoost model was trained ONLY on
+failure-time/customer features (model/preprocessing.py::FEATURE_COLUMNS) --
+it has never seen a candidate retry time as an input. The synthetic dataset
+records exactly ONE observed outcome per failure event, not what would have
+happened under each of the 5 candidate retry times -- there is no genuine
+counterfactual label to train a true candidate-aware model against, and
+fabricating one (e.g. by pretending the single observed outcome "belongs" to
+whichever candidate its timestamp happens to be closest to) would
+misrepresent correlation for a candidate we didn't actually simulate as
+causal evidence for it. So this module does NOT retrain or repurpose the
+calibrated failure-time-only model to "predict conditional on candidate
+time" -- that would be Option A from the brief, and it isn't defensible with
+this dataset.
 
-Instead (Option B): `base_probability` is Day-4's calibrated model output,
-unchanged, representing "how likely is this failure to recover at all." A
-small, fixed, fully transparent HEURISTIC -- not a learned effect -- nudges
-that probability up or down per candidate based on payday proximity and
-whether the candidate is an immediate retry. It is a policy rule, sized by
-domain reasoning matching Day 3's own generator assumptions (funds are more
-likely available near a payday window; an insufficient-funds failure is
-unlikely to self-resolve within the same hour), not a validated model
-prediction. Every function below documents this distinction in its
-docstring so it's never confused with `base_probability`.
+Instead (Option B): `base_probability` is the calibrated failure-time-only
+model's output, unchanged, representing "how likely is this failure to
+recover at all." A small, fixed, fully transparent HEURISTIC -- not a
+learned effect -- nudges that probability up or down per candidate based on
+payday proximity and whether the candidate is an immediate retry. It is a
+policy rule, sized by domain reasoning matching the generator's own
+assumptions (funds are more likely available near a payday window; an
+insufficient-funds failure is unlikely to self-resolve within the same
+hour), not a validated model prediction. Every function below documents
+this distinction in its docstring so it's never confused with
+`base_probability`.
 
-DAY-6 UPDATE: the objection above is now fixed. `data/generate_counterfactual_dataset.py`
+UPDATE: the objection above is now fixed. `data/generate_counterfactual_dataset.py`
 generates a genuine simulated outcome for every (event, candidate) pair, so
 Option A -- a model trained directly on candidate-time features -- is now
 defensible; see `model/train_candidate_model.py` and
 `model/candidate_preprocessing.py`. `load_candidate_aware_model()`,
 `predict_candidate_aware_recovery_probability()`, and
 `score_candidate_with_model_probability()` below are that new path, used by
-`policy/recovery_policy.py::decide_candidate_aware`. The Day-5 heuristic
-path above (`score_candidate`, `heuristic_adjustment`,
+`policy/recovery_policy.py::decide_candidate_aware`. The heuristic path
+above (`score_candidate`, `heuristic_adjustment`,
 `load_calibrated_model`) is left completely unchanged and still works --
 it remains the honest choice for any context where only failure-time
 features (no genuine candidate-level counterfactual data) are available.
@@ -67,24 +69,24 @@ PAYDAY_PROXIMITY_MAX_BOOST = 0.08  # bounded; scaled linearly by closeness to th
 PAYDAY_PROXIMITY_HORIZON_DAYS = 7  # beyond this many days from a payday window, no boost is applied
 
 
-class Day4ModelUnavailable(RuntimeError):
+class ScoringModelUnavailable(RuntimeError):
     """Raised when model/artifacts/ doesn't exist yet -- run model/train.py first."""
 
 
 def load_calibrated_model() -> tuple[CatBoostClassifier, object]:
-    """Loads Day-4's sigmoid-calibrated CatBoost model and the train-fit imputer it needs upstream of it."""
+    """Loads the sigmoid-calibrated failure-time-only CatBoost model and the train-fit imputer it needs upstream of it."""
     model_path = ARTIFACTS_DIR / "catboost_calibrated_sigmoid.joblib"
     imputer_path = ARTIFACTS_DIR / "prior_self_resolved_imputer.joblib"
     if not model_path.exists() or not imputer_path.exists():
-        raise Day4ModelUnavailable(
-            f"Day-4 model artifacts not found in {ARTIFACTS_DIR}. Run `./venv/bin/python model/train.py` first."
+        raise ScoringModelUnavailable(
+            f"Calibrated model artifacts not found in {ARTIFACTS_DIR}. Run `./venv/bin/python model/train.py` first."
         )
     return joblib.load(model_path), joblib.load(imputer_path)
 
 
 def predict_base_recovery_probability(failure_time_features: pd.DataFrame, model, imputer) -> "pd.Series[float]":
     """
-    `base_probability` = Day-4's calibrated model's prediction, using ONLY
+    `base_probability` = the calibrated failure-time-only model's prediction, using ONLY
     the failure-time/customer features it was trained on. No candidate-time
     information is or can be passed in here -- see module docstring.
     """
@@ -136,9 +138,9 @@ CANDIDATE_ARTIFACTS_DIR = PROJECT_ROOT / "model" / "candidate_artifacts"
 
 def load_candidate_aware_model() -> tuple[CatBoostClassifier, object]:
     """
-    Day-6: loads the candidate-aware calibrated CatBoost model
+    Loads the candidate-aware calibrated CatBoost model
     (model/train_candidate_model.py) -- trained directly on candidate-time
-    features (see model/candidate_preprocessing.py), unlike Day-5's
+    features (see model/candidate_preprocessing.py), unlike
     `load_calibrated_model()` above which only ever saw failure-time
     features. Its output is a genuine per-candidate probability, not a
     heuristic adjustment of one shared failure-time probability.
@@ -146,8 +148,8 @@ def load_candidate_aware_model() -> tuple[CatBoostClassifier, object]:
     model_path = CANDIDATE_ARTIFACTS_DIR / "catboost_calibrated_sigmoid.joblib"
     imputer_path = CANDIDATE_ARTIFACTS_DIR / "prior_self_resolved_imputer.joblib"
     if not model_path.exists() or not imputer_path.exists():
-        raise Day4ModelUnavailable(
-            f"Day-6 candidate-aware model artifacts not found in {CANDIDATE_ARTIFACTS_DIR}. "
+        raise ScoringModelUnavailable(
+            f"Candidate-aware model artifacts not found in {CANDIDATE_ARTIFACTS_DIR}. "
             "Run `./venv/bin/python model/train_candidate_model.py` first."
         )
     return joblib.load(model_path), joblib.load(imputer_path)
@@ -155,7 +157,7 @@ def load_candidate_aware_model() -> tuple[CatBoostClassifier, object]:
 
 def predict_candidate_aware_recovery_probability(candidate_features: pd.DataFrame, model, imputer) -> "pd.Series[float]":
     """
-    Day-6 equivalent of `predict_base_recovery_probability` above, except
+    Candidate-aware equivalent of `predict_base_recovery_probability` above, except
     `candidate_features` is a candidate-LEVEL row (model/candidate_preprocessing.py::FEATURE_COLUMNS)
     -- failure-time features AND candidate-time features together -- so the
     returned probability is already conditioned on a specific candidate
@@ -171,9 +173,9 @@ def predict_candidate_aware_recovery_probability(candidate_features: pd.DataFram
 
 def score_candidate_with_model_probability(predicted_recovery_probability: float, candidate: Candidate, amount: float, intervention_cost: float = 0.0) -> dict:
     """
-    Day-6: the candidate-aware model already outputs a probability
-    conditioned on THIS candidate's timing -- unlike `score_candidate` below
-    (Day 5), there is no separate heuristic_adjustment layered on top.
+    The candidate-aware model already outputs a probability conditioned on
+    THIS candidate's timing -- unlike `score_candidate` below (the
+    heuristic path), there is no separate heuristic_adjustment layered on top.
     `predicted_recovery_probability` is clipped to [0, 1] defensively (model
     output should already be in range; see tests/test_candidate_model.py).
 
@@ -197,12 +199,11 @@ def score_candidate(base_probability: float, candidate: Candidate, amount: float
     expected_recovery_value = predicted_recovery_probability * amount
     expected_incremental_value = expected_recovery_value - intervention_cost
 
-    `intervention_cost` defaults to 0 (Day 5 doesn't model a real cost yet)
-    but the parameter exists so a later day can supply a non-zero one
-    without changing this function's shape.
+    `intervention_cost` defaults to 0 (this heuristic path doesn't model a
+    real cost) but the parameter exists so a caller can supply a non-zero
+    one without changing this function's shape.
 
-    This is an ESTIMATE, not a claim about actual money recovered -- see
-    README "Day 5: expected recovery value".
+    This is an ESTIMATE, not a claim about actual money recovered.
     """
     adjustment = heuristic_adjustment(candidate.candidate_type, candidate.candidate_days_to_payday)
     predicted_recovery_probability = min(1.0, max(0.0, base_probability + adjustment))

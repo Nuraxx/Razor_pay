@@ -1,12 +1,12 @@
 """
-Day-5 deterministic candidate retry-time generation.
+Deterministic candidate retry-time generation.
 
-Reuses the exact payday/month-end calendar logic Day 3's dataset generator
-uses (data/generate_synthetic_dataset.py) so a candidate's meaning ("payday
-window", "month end window") is identical whether it came from the
+Reuses the exact payday/month-end calendar logic the synthetic dataset
+generator uses (data/generate_synthetic_dataset.py) so a candidate's meaning
+("payday window", "month end window") is identical whether it came from the
 synthetic dataset or a live policy decision.
 
-Unlike Day 3's generator -- which adds small random jitter to candidate
+Unlike the dataset generator -- which adds small random jitter to candidate
 offsets for dataset diversity -- candidate times here use FIXED offsets.
 A policy decision must be reproducible: the same failure_timestamp must
 always generate the same candidates, every time (see

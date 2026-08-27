@@ -1,6 +1,6 @@
 """
-Day-6 candidate-aware policy tests: decide_candidate_aware() and its
-DB-aware wrapper. Mirrors tests/test_policy.py's structure for the Day-5
+Candidate-aware policy tests: decide_candidate_aware() and its
+DB-aware wrapper. Mirrors tests/test_policy.py's structure for the heuristic
 `decide()` / `decide_for_failure_event()` pair -- same guardrails,
 determinism, audit logging, and idempotency guarantees must hold here too.
 """
@@ -58,7 +58,7 @@ def test_policy_version_is_recorded_as_candidate_aware():
         amount=1000.0, classification_bucket="retryable_soft", candidate_probabilities=UNIFORM_PROBS,
     )
     assert result.policy_version == POLICY_VERSION_CANDIDATE_AWARE
-    assert result.policy_version != "policy-v1"  # distinct from Day-5's heuristic policy
+    assert result.policy_version != "policy-v1"  # distinct from the heuristic policy
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +77,7 @@ def test_oracle_selection_via_latent_probabilities():
 
 
 # ---------------------------------------------------------------------------
-# Guardrails (same as Day 5)
+# Guardrails (same as the heuristic policy)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("bucket", ["hard_decline", "customer_cancelled", "unmapped"])
@@ -121,7 +121,7 @@ def test_decide_candidate_aware_is_deterministic():
 
 
 # ---------------------------------------------------------------------------
-# DB-backed: audit logging + idempotency, same guarantees as Day 5
+# DB-backed: audit logging + idempotency, same guarantees as the heuristic policy
 # ---------------------------------------------------------------------------
 
 def test_decide_for_failure_event_candidate_aware_creates_decision_and_audit_rows(test_db_session):
@@ -164,7 +164,7 @@ def test_decide_for_failure_event_candidate_aware_is_idempotent(test_db_session)
 
 def test_idempotency_shared_across_policy_versions(test_db_session):
     """An event_id decided once by decide_for_failure_event_candidate_aware
-    must never be re-decided by the Day-5 decide_for_failure_event either --
+    must never be re-decided by the heuristic decide_for_failure_event either --
     idempotency is keyed on event_id alone, not per policy version."""
     from policy.recovery_policy import decide_for_failure_event
 

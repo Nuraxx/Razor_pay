@@ -1,21 +1,23 @@
 """
-Day-7 ranking-model + money evaluation.
+Ranking-model + money evaluation.
 
     ./venv/bin/python evaluation/evaluate_ranking_policy.py
 
-"SYNTHETIC COUNTERFACTUAL EVALUATION" -- same disclaimer as Day 6: every
-number here comes from data/raw/counterfactual_outcomes.csv, a hand-designed
-simulation. It does not measure real Razorpay recovery performance.
+"SYNTHETIC COUNTERFACTUAL EVALUATION" -- same disclaimer as the
+candidate-aware model evaluation: every number here comes from
+data/raw/counterfactual_outcomes.csv, a hand-designed simulation. It does
+not measure real Razorpay recovery performance.
 
 Compares 5 approaches (brief section 7): Random candidate, Fixed Retry,
-Day-6 probability model, Day-7 ranking model, Oracle -- on both ranking
-metrics (top-1/top-2 accuracy, MRR, NDCG@5, mean within-event rank, pairwise
-accuracy, regret; ground truth = recovery_probability_latent, same Oracle
-definition Day 6 used, for continuity) and money metrics (section 8,
-realized counterfactual outcomes). Also runs the section-9 ablation study
-(event-only / candidate-only / event+candidate pointwise / Day-6 / Day-7)
-to separate "weak candidate features" from "wrong modeling objective" as the
-driver of Day 6's failure.
+the candidate-aware probability model, the ranking model, Oracle -- on both
+ranking metrics (top-1/top-2 accuracy, MRR, NDCG@5, mean within-event rank,
+pairwise accuracy, regret; ground truth = recovery_probability_latent, same
+Oracle definition the candidate-aware model used, for continuity) and money
+metrics (section 8, realized counterfactual outcomes). Also runs the
+section-9 ablation study (event-only / candidate-only / event+candidate
+pointwise / candidate-aware / ranking) to separate "weak candidate features"
+from "wrong modeling objective" as the driver of the candidate-aware
+model's failure.
 """
 from __future__ import annotations
 
@@ -52,7 +54,7 @@ from policy.scoring import load_candidate_aware_model, predict_candidate_aware_r
 
 REPORTS_DIR = PROJECT_ROOT / "evaluation" / "reports"
 RANDOM_SEED = SEED
-POLICY_NAMES = ["random_candidate", "fixed_retry", "day6_probability_model", "day7_ranking_model", "oracle_policy"]
+POLICY_NAMES = ["random_candidate", "fixed_retry", "candidate_probability_model", "ranking_model", "oracle_policy"]
 
 
 # ---------------------------------------------------------------------------
@@ -60,16 +62,16 @@ POLICY_NAMES = ["random_candidate", "fixed_retry", "day6_probability_model", "da
 # ---------------------------------------------------------------------------
 
 def compute_all_scores(test_df: pd.DataFrame) -> dict[str, pd.Series]:
-    from model.candidate_preprocessing import select_features_and_target as day6_select
-    from model.candidate_preprocessing import prepare_for_catboost as day6_prepare_cb
+    from model.candidate_preprocessing import select_features_and_target as select_candidate_probability_features
+    from model.candidate_preprocessing import prepare_for_catboost as candidate_model_prepare_cb
 
-    day6_model, day6_imputer = load_candidate_aware_model()
-    X6, _y = day6_select(test_df)
-    X6_imp = day6_imputer.transform(X6)
-    day6_scores = predict_candidate_aware_recovery_probability(X6_imp, day6_model, day6_imputer)
+    candidate_model, candidate_model_imputer = load_candidate_aware_model()
+    X6, _y = select_candidate_probability_features(test_df)
+    X6_imp = candidate_model_imputer.transform(X6)
+    candidate_probability_scores = predict_candidate_aware_recovery_probability(X6_imp, candidate_model, candidate_model_imputer)
 
     ranking_fitted = load_ranking_model()
-    day7_scores = predict_ranking_scores(test_df, ranking_fitted)
+    ranking_model_scores = predict_ranking_scores(test_df, ranking_fitted)
 
     rng = np.random.default_rng(RANDOM_SEED)
     random_scores = pd.Series(rng.random(len(test_df)), index=test_df.index)
@@ -77,8 +79,8 @@ def compute_all_scores(test_df: pd.DataFrame) -> dict[str, pd.Series]:
     oracle_scores = test_df["recovery_probability_latent"]
 
     return {
-        "day6_probability_model": day6_scores,
-        "day7_ranking_model": day7_scores,
+        "candidate_probability_model": candidate_probability_scores,
+        "ranking_model": ranking_model_scores,
         "random_candidate": random_scores,
         "oracle_policy": oracle_scores,
     }
@@ -87,7 +89,7 @@ def compute_all_scores(test_df: pd.DataFrame) -> dict[str, pd.Series]:
 def compute_pooled_classification_metrics(test_df: pd.DataFrame, score_columns: dict[str, pd.Series]) -> dict:
     y_true = test_df["recovered_within_14d"].astype(int).to_numpy()
     out = {}
-    for name in ("day6_probability_model", "day7_ranking_model"):
+    for name in ("candidate_probability_model", "ranking_model"):
         probs = score_columns[name].to_numpy()
         m = compute_metrics(y_true, np.clip(probs, 0.0, 1.0))
         out[name] = {k: v for k, v in m.items() if k != "confusion_matrix"}
@@ -278,10 +280,10 @@ def _score_with_quick_model(fitted: dict, df: pd.DataFrame) -> pd.Series:
     return pd.Series(fitted["model"].predict_proba(X)[:, 1], index=df.index)
 
 
-def run_ablation_study(train_df: pd.DataFrame, val_df: pd.DataFrame, test_df: pd.DataFrame, day6_scores: pd.Series, day7_scores: pd.Series) -> dict:
+def run_ablation_study(train_df: pd.DataFrame, val_df: pd.DataFrame, test_df: pd.DataFrame, candidate_probability_scores: pd.Series, ranking_model_scores: pd.Series) -> dict:
     """A: event context only. B: candidate features only. C: event+candidate,
     POINTWISE objective (isolates features from objective -- D/E already
-    exist as the real Day-6/Day-7 models)."""
+    exist as the real candidate-aware/ranking models)."""
     results = {}
 
     configs = {
@@ -299,8 +301,8 @@ def run_ablation_study(train_df: pd.DataFrame, val_df: pd.DataFrame, test_df: pd
         fitted = _fit_quick_pointwise_model(train_df, val_df, numeric, categorical, boolean)
         ablation_scores[name] = _score_with_quick_model(fitted, test_df)
 
-    ablation_scores["D_day6_probability_model"] = day6_scores
-    ablation_scores["E_day7_ranking_model"] = day7_scores
+    ablation_scores["D_candidate_probability_model"] = candidate_probability_scores
+    ablation_scores["E_ranking_model"] = ranking_model_scores
 
     for name, scores in ablation_scores.items():
         df = test_df.copy()
@@ -367,7 +369,7 @@ def main() -> None:
 
     ranking_summary = summarize_ranking(events)
     money_summary = summarize_money_metrics(events)
-    ablation_results = run_ablation_study(train_df, val_df, test_df, all_scores["day6_probability_model"], all_scores["day7_ranking_model"])
+    ablation_results = run_ablation_study(train_df, val_df, test_df, all_scores["candidate_probability_model"], all_scores["ranking_model"])
     checks = sanity_checks(events, test_df)
 
     report = {

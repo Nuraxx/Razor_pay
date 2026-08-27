@@ -1,5 +1,5 @@
 """
-Day-11 LLM provider abstraction.
+LLM provider abstraction.
 
 Deliberately minimal -- no LangChain, no LangGraph, no agent framework, no
 autonomous tool use (brief section 2). Four providers, selected by the

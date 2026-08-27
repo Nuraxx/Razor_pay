@@ -1,5 +1,5 @@
 """
-Day-12 tests: recovery/orchestrator.py -- the full failure matrix (brief
+Tests: recovery/orchestrator.py -- the full failure matrix (brief
 section 7, scenarios A-K), audit trail, final-result schema, and the
 LLM-cannot-affect-payment guarantee.
 
@@ -20,7 +20,7 @@ from policy.guardrails import MAX_RETRY_ATTEMPTS
 from recovery.orchestrator import RecoveryEventInput, orchestrate_recovery
 from recovery.schemas import RecoveryExecutionResult
 
-FAILURE_TS = datetime(2026, 2, 24, 10, 0, 0)  # all 5 candidates valid (Day 7/9/10 convention)
+FAILURE_TS = datetime(2026, 2, 24, 10, 0, 0)  # all 5 candidates valid (established convention)
 FAILURE_CONTEXT = {
     "day_of_month": 24, "days_to_nearest_payday_window": 6, "prior_if_failure_count": 0,
     "prior_if_self_resolved_rate": float("nan"), "tenure_days": 200, "plan_tier": "mid",
@@ -43,7 +43,7 @@ class _FakeCatBoost:
 
 
 def _fake_model(values=None) -> dict:
-    values = values or [500.0, 10.0, 5.0, 1.0, 0.5]  # huge margin -> confident, day8_model_b-sourced decision
+    values = values or [500.0, 10.0, 5.0, 1.0, 0.5]  # huge margin -> confident, subscription_value_model-sourced decision
     return {"imputer": _PassthroughImputer(), "catboost_model": _FakeCatBoost(values)}
 
 
