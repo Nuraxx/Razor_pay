@@ -56,7 +56,7 @@ from policy.decision_engine_v4 import (
     decide_engine_v4,
 )
 from policy.economics import compute_recovery_economics
-from policy.guardrails import validate_candidate
+from policy.guardrails import MAX_RETRY_ATTEMPTS, validate_candidate
 from policy.retry_candidates import Candidate
 
 REPORTS_DIR = PROJECT_ROOT / "evaluation" / "reports"
@@ -317,7 +317,22 @@ def evaluate_events_v4(test_df: pd.DataFrame, model: dict, day10_config: dict) -
             margin_threshold=day10_config["margin_threshold"], fallback_mode=day10_config["fallback_mode"],
             fallback_advantage_threshold=day10_config["fallback_advantage_threshold"], model=model,
         )
-        oracle_sel = max((ct for ct, valid in valid_mask.items() if valid), key=lambda ct: latent_value[ct], default=NO_ACTION)
+        # APPLES-TO-APPLES FIX (final pre-submission audit, third pass): once
+        # the deployed policy and Fixed Retry both get up to 3 scheduled
+        # attempts, Oracle must too -- otherwise a multi-attempt policy can
+        # beat a stale SINGLE-attempt "upper bound" purely from having more
+        # chances at a stochastic outcome, which is not a real upper-bound
+        # violation, just a broken comparison. Oracle's ranking metric is
+        # UNCHANGED (still latent_value, the same non-clairvoyant proxy it
+        # always used -- never the true realized outcome, which would make
+        # it a trivial, always-recovers oracle) -- only the NUMBER of
+        # attempts it is allowed to schedule from that same ranking changes,
+        # exactly mirroring how the deployed policy's own schedule
+        # (build_retry_schedule_from_decision) extends its single best pick
+        # into a ranked multi-attempt schedule without changing what ranks it.
+        oracle_ranked = sorted((ct for ct, valid in valid_mask.items() if valid), key=lambda ct: latent_value[ct], reverse=True)
+        oracle_schedule = oracle_ranked[:MAX_RETRY_ATTEMPTS]
+        oracle_sel = oracle_schedule[0] if oracle_schedule else NO_ACTION
 
         # MULTI-ATTEMPT PERSISTENCE (final pre-submission audit): the deployed
         # policy's own Fixed-Retry-style schedule -- see
@@ -366,6 +381,16 @@ def evaluate_events_v4(test_df: pd.DataFrame, model: dict, day10_config: dict) -
                 record[f"{policy_name}__realized_amount_recovered"] = sequence.amount_recovered
                 record[f"{policy_name}__n_attempts"] = sequence.n_attempts
                 record[f"{policy_name}__retry_schedule"] = day10_schedule
+            elif policy_name == "oracle_policy":
+                # APPLES-TO-APPLES FIX: same sequence-scoring as Fixed Retry
+                # and the deployed policy -- see oracle_schedule's own
+                # comment above for why this is required now that both of
+                # those get up to 3 attempts.
+                sequence = score_fixed_retry_sequence(oracle_schedule, realized_recovered, realized_amount)
+                record[f"{policy_name}__realized_recovered"] = sequence.recovered
+                record[f"{policy_name}__realized_amount_recovered"] = sequence.amount_recovered
+                record[f"{policy_name}__n_attempts"] = sequence.n_attempts
+                record[f"{policy_name}__retry_schedule"] = oracle_schedule
             else:
                 record[f"{policy_name}__realized_recovered"] = bool(realized_recovered.get(selected, False)) if selected != NO_ACTION else False
                 record[f"{policy_name}__realized_amount_recovered"] = float(realized_amount.get(selected, 0.0)) if selected != NO_ACTION else 0.0
@@ -686,10 +711,14 @@ def summarize_economics(events: pd.DataFrame, realized_summary: dict) -> dict:
         policy/costs.py), so this is exactly the same per-attempt cost model
         Fixed Retry already uses -- an apples-to-apples comparison, not a
         new cost model.
+      oracle_policy: APPLES-TO-APPLES FIX (final pre-submission audit, third
+        pass) -- same `n_attempts`-based costing, now that Oracle is also
+        scored with up to MAX_RETRY_ATTEMPTS scheduled attempts (see
+        oracle_schedule in evaluate_events_v4) rather than a single pick.
     """
     economics = {}
     for name in POLICY_NAMES:
-        if name in ("fixed_retry", "day10_improved_fallback"):
+        if name in ("fixed_retry", "day10_improved_fallback", "oracle_policy"):
             total_intervention_cost = float(events[f"{name}__n_attempts"].sum()) * (DEFAULT_COSTS.retry_cost + DEFAULT_COSTS.operational_cost)
         else:
             total_intervention_cost = float(
@@ -755,7 +784,7 @@ def build_stage_decomposition(events: pd.DataFrame, test_df: pd.DataFrame, model
         rs = float(events[f"{policy_name}__realized_amount_recovered"].sum())
         rate = float(events[f"{policy_name}__realized_recovered"].mean())
         cost = float(sum(cost_for_candidate(t, DEFAULT_COSTS) for t in events[f"{policy_name}__selected_candidate_type"] if t != NO_ACTION))
-        if policy_name in ("fixed_retry", "day10_improved_fallback"):
+        if policy_name in ("fixed_retry", "day10_improved_fallback", "oracle_policy"):
             cost = float(events[f"{policy_name}__n_attempts"].sum()) * (DEFAULT_COSTS.retry_cost + DEFAULT_COSTS.operational_cost)
         if policy_name == "rule_based":
             cost += contact_cost(int(events["rule_based__n_contacts"].sum()), DEFAULT_COSTS)

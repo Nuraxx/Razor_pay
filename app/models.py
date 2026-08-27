@@ -201,6 +201,17 @@ class PolicyDecision(Base):
     communication_deferred_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     communication_deferred_sent: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # -- Added final pre-submission audit (re-check-before-acting, see -------
+    # recovery/retry_sweep.py::_subscription_still_eligible). The ONLY -------
+    # durable record of an explicit opt-out signal anywhere in this codebase ---
+    # -- `ComplianceContext.customer_opted_out` / `RecoveryEventInput.customer_opted_out` ---
+    # were, before this, request-scoped only (never persisted), so a retry ---
+    # sweep running hours/days after attempt 1 had no way to know a customer ---
+    # opted out on a LATER event for the same subscription. Set (sticky, ------
+    # never cleared back to False) by recovery/orchestrator.py whenever a -----
+    # decided event's own `customer_opted_out` is True.
+    customer_opted_out: Mapped[bool] = mapped_column(Boolean, default=False)
+
 
 class LLMInvocation(Base):
     """

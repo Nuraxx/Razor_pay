@@ -377,6 +377,17 @@ def orchestrate_recovery(
         policy_row.communication_deferred_until = compliance.communication_deferred_until
         db.add(policy_row)
 
+    # RE-CHECK-BEFORE-ACTING (final pre-submission audit): persist an
+    # explicit opt-out signal durably on THIS event's own policy_decisions
+    # row -- previously request-scoped only, invisible to recovery/retry_sweep.py
+    # when it re-visits this subscription hours/days later for a scheduled
+    # follow-up attempt or a deferred communication. Sticky (never cleared
+    # back to False here) -- see app/models.py's PolicyDecision.customer_opted_out
+    # docstring.
+    if event.customer_opted_out:
+        policy_row.customer_opted_out = True
+        db.add(policy_row)
+
     # --- 6b. Generalized outcome tracking (Track-03, additive) -------------
     # app.models.RecoveryOutcome's own docstring: "the generalized revenue-
     # outcome model, shared by every domain (payment_failed included)" --

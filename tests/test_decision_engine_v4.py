@@ -558,3 +558,40 @@ def test_configuration_search_selects_best_by_total_realized_value(latent_splits
     chosen_value = results[chosen_key]["total_realized_value_selected_rs"]
     assert all(chosen_value >= r["total_realized_value_selected_rs"] for r in results.values())
     assert all("total_realized_value_selected_rs" in r and "total_latent_value_selected_rs" in r for r in results.values())
+
+
+# ---------------------------------------------------------------------------
+# APPLES-TO-APPLES FIX (final pre-submission audit, third pass): Oracle must
+# also get multi-attempt scoring once Fixed Retry and the deployed policy do.
+# ---------------------------------------------------------------------------
+
+def test_oracle_realized_value_is_never_below_the_deployed_policy(latent_splits, real_model):
+    # Regression test for the exact bug this fix corrected: with Oracle
+    # scored as a single-attempt pick while Fixed Retry and the deployed
+    # policy both get up to 3 scheduled attempts, a multi-attempt policy
+    # could beat "Oracle" purely from having more chances at a stochastic
+    # outcome -- not a real upper-bound violation, just a broken comparison.
+    # Oracle must be AT LEAST as good as every other policy on realized Rs,
+    # by construction, once it is scored with the SAME multi-attempt
+    # machinery (see evaluate_events_v4's oracle_schedule).
+    from evaluation.evaluate_decision_engine_v4 import evaluate_events_v4, select_day10_configuration_on_validation
+
+    _train, val_df, test_df = latent_splits
+    chosen_config, _results = select_day10_configuration_on_validation(val_df, real_model)
+    events = evaluate_events_v4(test_df, real_model, chosen_config)
+
+    oracle_total = events["oracle_policy__realized_amount_recovered"].sum()
+    for policy_name in ("fixed_retry", "rule_based", "day8_model_b_alone", "day9_original_fallback", "day10_improved_fallback"):
+        assert oracle_total >= events[f"{policy_name}__realized_amount_recovered"].sum(), (
+            f"oracle_policy scored below {policy_name} -- Oracle is no longer a valid upper bound"
+        )
+
+
+def test_oracle_schedule_never_exceeds_max_retry_attempts(latent_splits, real_model):
+    from evaluation.evaluate_decision_engine_v4 import evaluate_events_v4, select_day10_configuration_on_validation
+    from policy.guardrails import MAX_RETRY_ATTEMPTS
+
+    _train, val_df, test_df = latent_splits
+    chosen_config, _results = select_day10_configuration_on_validation(val_df, real_model)
+    events = evaluate_events_v4(test_df, real_model, chosen_config)
+    assert (events["oracle_policy__n_attempts"] <= MAX_RETRY_ATTEMPTS).all()

@@ -20,18 +20,34 @@ PAST = NOW - timedelta(hours=1)
 FUTURE = NOW + timedelta(hours=1)
 
 
-def _make_decision(db, *, event_id: int, types: list[str], datetimes: list[datetime], next_index: int = 1) -> PolicyDecision:
+def _make_decision(db, *, event_id: int, types: list[str], datetimes: list[datetime], next_index: int = 1, subscription_id: str | None = None) -> PolicyDecision:
     row = PolicyDecision(
         event_id=event_id,
-        subscription_id=f"sub_retry_sweep_{event_id}",
+        subscription_id=subscription_id or f"sub_retry_sweep_{event_id}",
         selected_candidate_type=types[0],
         selected_candidate_datetime=datetimes[0],
         policy_version="policy-v4",
         decision_reason="test fixture",
         decision_source="day8_model_b",
+        classification_bucket="retryable_soft",
         retry_schedule_json=json.dumps(types),
         retry_schedule_datetimes_json=json.dumps([dt.isoformat() for dt in datetimes]),
         retry_schedule_next_index=next_index,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def _make_later_event_row(db, *, event_id: int, subscription_id: str, customer_opted_out: bool = False, classification_bucket: str = "retryable_soft") -> PolicyDecision:
+    """A SECOND policy_decisions row for the SAME subscription_id -- models a
+    later real event (e.g. a subsequent webhook) that changed durable
+    opt-out/classification state for the subscription. No retry_schedule of
+    its own -- only `_subscription_still_eligible`'s re-check reads it."""
+    row = PolicyDecision(
+        event_id=event_id, subscription_id=subscription_id, selected_candidate_type="immediate",
+        policy_version="policy-v4", decision_reason="later event fixture", decision_source="day8_model_b",
+        classification_bucket=classification_bucket, customer_opted_out=customer_opted_out,
     )
     db.add(row)
     db.flush()
@@ -137,6 +153,94 @@ class TestAdvanceOneRetrySchedule:
         assert advance_one_retry_schedule(db, decision, now=NOW) is False
         assert decision.retry_schedule_next_index == 2
         audit_rows = db.query(AuditLog).filter(AuditLog.failure_event_id == 70006).all()
+        assert len(audit_rows) == 1
+        db.close()
+
+
+class TestReCheckBeforeActing:
+    """RE-CHECK-BEFORE-ACTING (final pre-submission audit): opt-out or
+    reclassification recorded on a LATER event for the same subscription
+    must immediately, permanently suppress every remaining scheduled
+    attempt / pending deferred communication -- not just the state captured
+    when the sequence was first created."""
+
+    def test_opt_out_on_later_event_aborts_remaining_schedule(self, test_db_session):
+        db = test_db_session()
+        sub_id = "sub_recheck_optout"
+        decision = _make_decision(db, event_id=70040, types=["immediate", "plus_1_day_morning", "payday_window"], datetimes=[PAST, PAST, PAST], subscription_id=sub_id)
+        _make_outcome(db, event_id=70040)
+        _make_later_event_row(db, event_id=70041, subscription_id=sub_id, customer_opted_out=True)
+        db.commit()
+
+        assert advance_one_retry_schedule(db, decision, now=NOW) is False
+        assert decision.retry_schedule_next_index == 3  # aborted -- schedule length, not advanced
+        audit_rows = db.query(AuditLog).filter(AuditLog.failure_event_id == 70040, AuditLog.action == "retry_schedule_aborted").all()
+        assert len(audit_rows) == 1
+        assert "customer_opted_out" in audit_rows[0].reason
+        db.close()
+
+    def test_reclassification_on_later_event_aborts_remaining_schedule(self, test_db_session):
+        db = test_db_session()
+        sub_id = "sub_recheck_cancelled"
+        decision = _make_decision(db, event_id=70042, types=["immediate", "plus_1_day_morning"], datetimes=[PAST, PAST], subscription_id=sub_id)
+        _make_outcome(db, event_id=70042)
+        _make_later_event_row(db, event_id=70043, subscription_id=sub_id, classification_bucket="customer_cancelled")
+        db.commit()
+
+        assert advance_one_retry_schedule(db, decision, now=NOW) is False
+        assert decision.retry_schedule_next_index == 2
+        audit_rows = db.query(AuditLog).filter(AuditLog.failure_event_id == 70042, AuditLog.action == "retry_schedule_aborted").all()
+        assert len(audit_rows) == 1
+        assert "customer_cancelled" in audit_rows[0].reason
+        db.close()
+
+    def test_no_opt_out_or_reclassification_still_advances_normally(self, test_db_session):
+        db = test_db_session()
+        sub_id = "sub_recheck_clean"
+        decision = _make_decision(db, event_id=70044, types=["immediate", "plus_1_day_morning"], datetimes=[PAST, PAST], subscription_id=sub_id)
+        _make_outcome(db, event_id=70044)
+        _make_later_event_row(db, event_id=70045, subscription_id=sub_id, classification_bucket="retryable_soft")
+        db.commit()
+
+        assert advance_one_retry_schedule(db, decision, now=NOW) is True
+        assert decision.retry_schedule_next_index == 2
+        db.close()
+
+    def test_abort_is_idempotent_across_sweep_passes(self, test_db_session):
+        # Once aborted, a second sweep pass must not re-check eligibility or
+        # write a second audit row -- the schedule is already exhausted.
+        db = test_db_session()
+        sub_id = "sub_recheck_idempotent"
+        decision = _make_decision(db, event_id=70046, types=["immediate", "plus_1_day_morning"], datetimes=[PAST, PAST], subscription_id=sub_id)
+        _make_outcome(db, event_id=70046)
+        _make_later_event_row(db, event_id=70047, subscription_id=sub_id, customer_opted_out=True)
+        db.commit()
+
+        assert advance_one_retry_schedule(db, decision, now=NOW) is False
+        assert advance_one_retry_schedule(db, decision, now=NOW) is False
+        audit_rows = db.query(AuditLog).filter(AuditLog.failure_event_id == 70046, AuditLog.action == "retry_schedule_aborted").all()
+        assert len(audit_rows) == 1
+        db.close()
+
+    def test_opt_out_suppresses_pending_deferred_communication(self, test_db_session):
+        db = test_db_session()
+        sub_id = "sub_recheck_defer_optout"
+        _make_raw_and_failure_event(db, event_id=70048)
+        decision = PolicyDecision(
+            event_id=70048, subscription_id=sub_id, selected_candidate_type="immediate",
+            selected_candidate_datetime=PAST - timedelta(hours=6), policy_version="policy-v4",
+            decision_reason="test fixture", decision_source="day8_model_b", classification_bucket="retryable_soft",
+            communication_deferred_until=PAST, communication_deferred_sent=False,
+        )
+        db.add(decision)
+        db.flush()
+        _make_later_event_row(db, event_id=70049, subscription_id=sub_id, customer_opted_out=True)
+        db.commit()
+
+        assert fire_one_deferred_communication(db, decision, now=NOW) is False
+        assert decision.communication_deferred_sent is True  # permanently suppressed
+        assert db.query(LLMInvocation).filter(LLMInvocation.event_id == 70048).count() == 0
+        audit_rows = db.query(AuditLog).filter(AuditLog.failure_event_id == 70048, AuditLog.action == "deferred_communication_suppressed").all()
         assert len(audit_rows) == 1
         db.close()
 
