@@ -570,7 +570,13 @@ def _score_split(fitted: dict[str, Any], df: pd.DataFrame) -> dict[str, float]:
 
 
 def _model_path() -> Path:
-    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+    # Ensures the ACTUAL target's own parent dir exists (not the hardcoded
+    # ARTIFACTS_DIR constant) -- tests that redirect UNIFIED_MODEL_PATH to a
+    # tmp_path (see tests/conftest.py's session-scoped fixture and
+    # tests/test_unified_model.py) must never have the side effect of
+    # creating the real model/artifacts/ directory in a fresh clone that
+    # doesn't have it yet.
+    UNIFIED_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     return UNIFIED_MODEL_PATH
 
 
@@ -629,7 +635,11 @@ def train_unified_model(
     joblib.dump(fitted, _model_path())
 
     if write_report:
-        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        # Same rationale as _model_path() above: mkdir the ACTUAL target
+        # path's parent, not the hardcoded REPORTS_DIR constant, so
+        # redirecting TRAINING_REPORT_PATH (tests) never creates the real
+        # model/reports/ directory as a side effect.
+        TRAINING_REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
         report = {
             "model_version": fitted["model_version"],
             "trained_at": fitted["trained_at"],
@@ -654,14 +664,14 @@ def load_unified_model() -> dict[str, Any]:
     does not exist OR fails to deserialize (corrupt/truncated file, wrong
     format, etc.) -- deliberately does NOT silently train a fresh model on
     the live path (that would be nondeterministic and mask genuine
-    unavailability); run model/train_unified_model.py explicitly instead.
-    A corrupt artifact must degrade the same way a missing one does (caught
-    by get_live_unified_model() below), never crash the caller with a raw
-    joblib/pickle exception."""
+    unavailability); run `python -m model.train_unified_model` explicitly
+    instead. A corrupt artifact must degrade the same way a missing one does
+    (caught by get_live_unified_model() below), never crash the caller with
+    a raw joblib/pickle exception."""
     artifact = _model_path()
     if not artifact.exists():
         raise UnifiedModelUnavailable(
-            f"Unified model artifact not found at {artifact}. Run `./venv/bin/python model/train_unified_model.py` first."
+            f"Unified model artifact not found at {artifact}. Run `./venv/bin/python -m model.train_unified_model` first."
         )
     try:
         loaded = joblib.load(artifact)

@@ -80,6 +80,21 @@ class Settings:
     ENABLE_RETRY_SWEEP_SCHEDULER: bool = os.getenv("ENABLE_RETRY_SWEEP_SCHEDULER", "true").lower() == "true"
     RETRY_SWEEP_INTERVAL_SECONDS: int = int(os.getenv("RETRY_SWEEP_INTERVAL_SECONDS", "300"))
 
+    # Live feature enrichment (recovery/live_feature_enrichment.py, BUG-4
+    # pre-submission audit fix): an OPTIONAL, best-effort call to Razorpay's
+    # Subscriptions API to fill in `tenure_days` (the one Model B feature
+    # genuinely obtainable that way -- see that module's FEATURE_SOURCES
+    # classification for why the other 6 remaining features have no real
+    # source at all, live or via any API). Defaults to "false" (the safe,
+    # offline default) -- the live webhook path already computes its
+    # deterministic/webhook-native features and falls back to the
+    # rule-based policy tier with this disabled; nothing about correctness
+    # depends on turning it on. An enrichment failure of any kind (timeout,
+    # network, 4xx/5xx, malformed response) never crashes the webhook --
+    # see that module's docstring.
+    LIVE_FEATURE_ENRICHMENT_ENABLED: bool = os.getenv("LIVE_FEATURE_ENRICHMENT_ENABLED", "false").lower() == "true"
+    LIVE_FEATURE_ENRICHMENT_TIMEOUT_SECONDS: float = float(os.getenv("LIVE_FEATURE_ENRICHMENT_TIMEOUT_SECONDS", "5"))
+
     def validate_webhook_secret_present(self) -> None:
         if not self.RAZORPAY_WEBHOOK_SECRET:
             raise RuntimeError(

@@ -2,12 +2,13 @@
 
 **Razorpay AI Buildathon — Track 3: AI Revenue Recovery**
 
-**Current status:** 964 tests collected, 962 passing, 2 skipped
-(`pytest tests -q`) as of the dataset-scaling pass (§16d) — this is a
-point-in-time figure, not a claim this document keeps itself in sync with;
-verify with the command above if it matters for your purposes. (Corrected
-here from a stale "891 tests passing" that disagreed with §15's own count —
-the two should never be allowed to drift apart again.)
+**Current status:** 1019 tests collected, all passing (0 skipped when
+`model/artifacts/` already has a manually-trained calibrated model, as in
+this working copy; 3 honest `pytest.skip`s for that specific artifact on a
+genuinely fresh clone that hasn't run `model/train.py` yet — see §8/§15)
+(`pytest tests -q`) as of the BUG-1/2/3/4 pre-submission audit fix pass —
+this is a point-in-time figure, not a claim this document keeps itself in
+sync with; verify with the command above if it matters for your purposes.
 
 An offline-verifiable prototype that replaces Razorpay Subscriptions' blind
 fixed-interval retry (retry once/day for 3 days, regardless of *why* a charge
@@ -321,14 +322,50 @@ truth for that distinction — no reviewer should have to guess between
 **LIVE SUBSCRIPTION PATH** (`payment_failed` / `subscription_payment_failed`
 — a subscription-linked charge):
 - Entrypoint: `app/main.py`'s `/webhook/razorpay` → `recovery/webhook_pipeline.py::process_raw_event`
-  → `recovery/orchestrator.py::orchestrate_recovery`
+  → `recovery/live_feature_enrichment.py::build_live_features` (honestly
+  assembles whatever subset of Model B's features a real event actually has
+  — see the BUG-4 note below) → `recovery/orchestrator.py::orchestrate_recovery`
 - Model: **Model B** (`model/train_latent_target_model.py`, a CatBoost
   regressor predicting `expected_recovery_value_latent` directly), loaded via
-  `policy/decision_engine.py::_load_model_safely`
+  `policy/decision_engine.py::_load_model_safely` — **in practice, Model B is
+  never actually invoked for a genuine live webhook today** (see below);
+  every real subscription decision is currently made by the rule-based
+  fallback tier
 - Policy: **`policy-v4`** (`policy/decision_engine_v4.py::decide_for_failure_event_engine_v4`)
   — margin-gated fallback between Model B and `policy/baselines.py`'s
   rule-based candidate; see [§16b](#16b-economic-correction-subscription-decision-policy)
   for the corrected default configuration
+
+  **Why Model B never actually runs live (pre-submission audit, BUG-4 fix):**
+  Model B requires all 12 keys in `policy/decision_engine.py::EVENT_FEATURE_KEYS`
+  to be present, or its own `_predict_recovery_values` check fails closed to
+  the rule-based tier (unmodified — see that module). `recovery/live_feature_enrichment.py`
+  is the boundary that honestly assembles a live event's feature vector, and
+  classifies every one of the 12 keys by its real, verified source:
+
+  | Feature | Source | Live today? |
+  |---|---|---|
+  | `day_of_month` | `DERIVED_FROM_AUTHORITATIVE_DATA` (the failure timestamp) | Yes |
+  | `days_to_nearest_payday_window` | `DERIVED_FROM_AUTHORITATIVE_DATA` (calendar math — same helper `policy/retry_candidates.py` already uses live) | Yes |
+  | `prior_if_failure_count` | `DERIVED_FROM_AUTHORITATIVE_DATA` (this project's own stored `RawEvent` history) | Yes |
+  | `primary_instrument` | `WEBHOOK_NATIVE` (`payload.payment.entity.method`) | Yes |
+  | `tenure_days` | `RAZORPAY_API_ENRICHED` — optional, best-effort Subscriptions-API call, off by default (`LIVE_FEATURE_ENRICHMENT_ENABLED=false`) | Only if enabled and the call succeeds |
+  | `plan_tier`, `city_tier` | `MERCHANT_PROFILE` — would need a merchant-supplied catalog this project has no integration for | No |
+  | `prior_if_self_resolved_rate`, `is_month_end_settlement_rush`, `bank_network_conditions`, `issuing_bank_downtime_flag`, `network_latency_bucket` | `UNAVAILABLE` — simulation-only constructs in the synthetic dataset generator, no real-world source exists | No |
+
+  Because at least 5 keys are always `UNAVAILABLE`, a real webhook can never
+  produce a complete feature vector, with or without enrichment enabled —
+  Model B is architecturally never invoked for genuine live traffic, and the
+  rule-based tier is what actually decides every live subscription recovery
+  today. This is an intentional, honestly-documented degradation (see the
+  full reasoning and every failure-mode's handling in
+  `recovery/live_feature_enrichment.py`'s module docstring), not a bug to
+  paper over with fabricated feature values. Set
+  `LIVE_FEATURE_ENRICHMENT_ENABLED=true` (requires `RAZORPAY_KEY_ID`/
+  `RAZORPAY_KEY_SECRET`) to additionally attempt the one feature
+  (`tenure_days`) that genuinely is obtainable via Razorpay's API — any
+  failure (timeout, network error, HTTP 4xx/5xx, malformed response) degrades
+  silently to "not enriched," never crashes or blocks the webhook.
 - Compliance: `policy/compliance.py::evaluate_compliance` (`compliance-v1`),
   now including the contact-hours gate ([§18](#18-security--auditability))
 - LLM: `llm/service.py` → `llm/client.py::get_llm_client()` — whatever
@@ -456,14 +493,15 @@ configuration — see [§9](#9-offline-mode).
 
 | Input | Where it's used | Status in this repo | Required for |
 |---|---|---|---|
-| `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | `app/config.py` (loaded, currently unused by any request path — no live Razorpay API call exists anywhere in the codebase) | Configured in local `.env` (not committed); empty in `.env.example` | Only if you intend to create real Test Mode subscriptions in the Dashboard |
-| `RAZORPAY_WEBHOOK_SECRET` | HMAC verification (`app/webhook_security.py`) | Configured in local `.env`; `.env.example` ships a placeholder value, must be replaced with the Dashboard-issued secret for real deliveries | Required to receive and verify a **real** Razorpay webhook. Not required for tests, demos, or the dashboard — all run fully offline against synthetic/mock data. |
+| `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | `app/config.py` (loaded); optionally used by `recovery/live_feature_enrichment.py`'s Subscriptions-API call, ONLY when `LIVE_FEATURE_ENRICHMENT_ENABLED=true` (default `false`) | Configured in local `.env` (not committed); empty in `.env.example` | Required for real Test Mode subscriptions in the Dashboard (§10), and optionally for live feature enrichment (§4a). **NOT REQUIRED FOR OFFLINE TESTS** — `pytest tests/ -q` never reads these. |
+| `RAZORPAY_WEBHOOK_SECRET` | HMAC verification (`app/webhook_security.py`) | **NOT REQUIRED FOR OFFLINE TESTS.** `.env.example` ships a clearly-labeled FAKE placeholder (`local_dev_placeholder_change_me`) so `cp .env.example .env` alone is enough for FastAPI to start locally — it behaves as an ordinary HMAC secret (real verification, no bypass), just not a real Razorpay-issued one. **REQUIRED FOR A REAL RAZORPAY TEST WEBHOOK**: replace it with the Dashboard-issued secret (§10) before pointing this server at genuine Razorpay traffic. | See left. |
+| `LIVE_FEATURE_ENRICHMENT_ENABLED` / `LIVE_FEATURE_ENRICHMENT_TIMEOUT_SECONDS` | `recovery/live_feature_enrichment.py` | Defaults to `false` / `5` in `.env.example` | **OPTIONAL.** Safe to leave at the default for every workflow in this repo, tests included — see the feature-source table in §4a for why enabling it still never makes Model B run live on real traffic. |
 | zrok token / tunnel | Exposes local FastAPI to a public HTTPS URL Razorpay's Dashboard will accept (`ngrok.io` is explicitly blacklisted by Razorpay) | Not stored in this repo — a per-developer, per-session manual step | Required only for a live webhook demo (§10). Not required for anything else. |
 | `ANTHROPIC_API_KEY` | `llm/client.py::AnthropicLLMClient`, only reached when `LLM_PROVIDER=anthropic` | Empty in `.env.example`; `LLM_PROVIDER` defaults to `mock`, which never reads this value | Required only to see real Claude-generated output instead of the deterministic mock. Test suite, demos, and dashboard all default to mock and need no key. |
 | `GEMINI_API_KEY` | `llm/client.py::GeminiLLMClient`, only reached when `LLM_PROVIDER=gemini` | Empty in `.env.example`; free-tier quota is small and can exhaust mid-demo, in which case the deterministic fallback is used and logged — never treated as a bug | Required only to see real Gemini-generated output. Test suite always forces `LLM_PROVIDER=mock` regardless of `.env` (`tests/conftest.py::_force_mock_llm_provider_by_default`), so it never affects test results either way. |
 | `OLLAMA_BASE_URL` / `OLLAMA_MODEL` | `llm/client.py::OllamaLLMClient`, only reached when `LLM_PROVIDER=ollama` | Defaults to `http://localhost:11434` / `qwen3:14b` in `.env.example` — no API key of any kind | Required only to use a locally-running Ollama server instead of a remote provider. Requires `ollama serve` running and the model already pulled (`ollama pull qwen3:14b`); reachability/model-missing failures fall back to the same deterministic mock output as any other provider failure. Test suite always forces `LLM_PROVIDER=mock`, so it never makes a real local call either. |
-| Trained model artifacts | `model/latent_target_artifacts/`, `model/artifacts/`, etc. | **Not committed** (`.gitignore` excludes all `model/*_artifacts/` and `evaluation/reports/`) — present only in this working copy because training/evaluation were already run here | **Required manual step on a fresh clone**: run `model/train.py`, `model/train_candidate_model.py`, `model/train_ranking_model.py`, `model/train_latent_target_model.py`, then the matching `evaluation/evaluate_*.py` scripts, before the dashboard/demo will show real (non-fallback) model output. The orchestrator degrades gracefully if skipped (falls back to the rule-based tier), but the "current model" evaluation numbers in §16 won't exist until these are run. |
-| Generated synthetic dataset | `data/raw/*.csv`, `data/processed/*.csv` | Present and committed — the dataset itself, unlike the trained artifacts above, is tracked in git | Nothing further needed; regenerate via `data/generate_synthetic_dataset.py` / `data/generate_counterfactual_dataset.py` only if you want a fresh draw |
+| Trained model artifacts | `model/latent_target_artifacts/`, `model/artifacts/`, etc. | **Not committed** (`.gitignore` excludes all `model/*_artifacts/` and `evaluation/reports/`) — present only in this working copy because training/evaluation were already run here | **NOT REQUIRED FOR OFFLINE TESTS**: `pytest tests/ -q` trains its own small, deterministic, tmp-directory-only unified-model artifact automatically (`tests/conftest.py`'s session-scoped fixture) and every other model dependency in the test suite either injects a fake model or gracefully exercises the fallback path — no manual training step is needed for a fresh clone's tests to pass. **Still a manual step for the dashboard/demo to show real (non-fallback) model output**: run `model/train.py`, `model/train_candidate_model.py`, `model/train_ranking_model.py`, `model/train_latent_target_model.py`, `python -m model.train_unified_model`, then the matching `evaluation/evaluate_*.py` scripts. The orchestrator degrades gracefully if skipped either way (falls back to the rule-based/deterministic tier), but the "current model" evaluation numbers in §16 won't exist until these are run. |
+| Generated synthetic dataset | `data/raw/*.csv`, `data/processed/*.csv` | Present and committed — the dataset itself, unlike the trained artifacts above, is tracked in git | Nothing further needed; regenerate via `python -m data.generate_synthetic_dataset` / `python -m data.generate_counterfactual_dataset` only if you want a fresh draw |
 
 No secret value is printed anywhere in this document or in application logs
 (verified — `tests/test_llm.py::TestNoSecretsInLogs`,
@@ -593,14 +631,22 @@ not just `-m`).
 ./venv/bin/python -m pytest tests/ -v
 ```
 
-**964 tests collected, 962 passing, 2 skipped** (verified by direct execution
-in this final pre-submission audit pass — up from 891 after adding the
-contact-hours, fresh-clone-database, economic-correction,
-multi-attempt-persistence, deferred-communication, Oracle-apples-to-apples,
-and re-check-before-acting regression tests; the historical "432/432" figure
-below in §17 predates Track-03 entirely and is kept only as a point-in-time
-record — always trust `pytest tests -q`'s own output over any number in this
-document, including this one).
+Self-contained on a genuinely fresh clone — **no manual training step is a
+prerequisite.** `tests/conftest.py`'s session-scoped fixture trains one real,
+small unified-model artifact into a pytest tmp directory automatically (never
+into `model/artifacts/`, never overwriting a real committed-ignored
+artifact); every other model dependency in the suite either injects a fake
+model object (`policy/decision_engine.py`'s Model B tests) or exercises the
+documented, tested fallback path directly.
+
+**1019 tests collected, all passing** in this working copy (verified by
+direct execution, twice, in the BUG-1/2/3/4 pre-submission audit fix pass;
+also independently verified passing — 1016 passed, 3 skipped — from a
+genuinely fresh clone with no pre-existing model artifacts or database, per
+that audit's BUG-2 fix); the historical "432/432" figure below in §17
+predates Track-03 entirely and is kept only as a point-in-time record —
+always trust `pytest tests -q`'s own output over any number in this
+document, including this one.
 Coverage includes, per boundary: malformed webhook body, invalid/missing/
 tampered signature, duplicate webhook delivery, missing required fields, an
 unsupported event type or a missing subscription/payment entity, a
@@ -1052,11 +1098,11 @@ event). Split: 900/300/300 subscriptions → 1,407/468/469 failure events
 overall, 67.7% train, 67.7% validation, 66.1% test — closely matched across
 splits, no distribution shift introduced by the resplit. Both raw regen
 commands are the existing, unmodified generators:
-`./venv/bin/python data/generate_synthetic_dataset.py` then
-`./venv/bin/python data/generate_counterfactual_dataset.py` (the latter reads
+`./venv/bin/python -m data.generate_synthetic_dataset` then
+`./venv/bin/python -m data.generate_counterfactual_dataset` (the latter reads
 `DEFAULT_N_SUBSCRIPTIONS` from the former, so both scale together
 automatically). Model B retrained with the existing, unmodified
-`./venv/bin/python model/train_latent_target_model.py` — same artifact path
+`./venv/bin/python -m model.train_latent_target_model` — same artifact path
 (`model/latent_target_artifacts/value/`), same schema
 `policy/decision_engine.py::_load_model_safely` already expects.
 
@@ -1174,7 +1220,11 @@ EVALUATION** regardless of population size — none of this measures real
 Razorpay recovery performance, and Model B is not claimed to be
 "production accurate" by any of these numbers.
 
-Reproduce: `./venv/bin/python data/generate_synthetic_dataset.py && ./venv/bin/python data/generate_counterfactual_dataset.py && ./venv/bin/python model/train_latent_target_model.py && ./venv/bin/python evaluation/evaluate_latent_target_policy.py`
+Reproduce: `./venv/bin/python -m data.generate_synthetic_dataset && ./venv/bin/python -m data.generate_counterfactual_dataset && ./venv/bin/python -m model.train_latent_target_model && ./venv/bin/python -m model.train_candidate_model && ./venv/bin/python -m model.train_ranking_model && ./venv/bin/python -m evaluation.evaluate_latent_target_policy`
+(`evaluate_latent_target_policy.py` compares Model B against the earlier
+candidate-aware/ranking model generations too, so it needs both of their
+artifacts on disk as well — verified end to end from a genuinely fresh
+clone, see BUG-3 in the pre-submission audit report)
 for regression/ranking; the economic table above requires calling
 `evaluate_events_v4(test_df, model, FROZEN_CONFIG)` directly with the frozen
 config (not `evaluate_decision_engine_v4.py`'s own `main()`) for the reason

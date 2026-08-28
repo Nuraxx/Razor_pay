@@ -14,6 +14,52 @@ from app.main import app
 TEST_WEBHOOK_SECRET = "test_webhook_secret_for_pytest_only"
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _unified_model_test_artifact(tmp_path_factory):
+    """
+    BUG-2 regression fixture (pre-submission audit): a genuinely fresh clone
+    has no model/artifacts/unified_model.joblib (gitignored -- produced only
+    by running `python -m model.train_unified_model` by hand). Several tests
+    exercise the REAL model-loading path (model.unified_model.load_unified_model
+    / get_live_unified_model) -- tests/test_revenue_recovery_policy.py's
+    TestUnifiedMLPolicyBoundary, and the ml_unified_v1-asserting tests in
+    tests/test_webhook_endpoint.py -- and used to require that artifact to
+    already exist on disk, making `pytest tests/ -q` fail (or silently give
+    different results) on a fresh clone until someone manually trained a
+    model first.
+
+    This fixture trains ONE real CatBoost unified model -- via the exact
+    same train_unified_model() the production training script calls, no
+    mocking of the ML mechanism itself -- into a session-scoped pytest tmp
+    directory, and points the module's own path constants there for the
+    whole test session. It never writes into model/artifacts/ (see the
+    _model_path()/TRAINING_REPORT_PATH mkdir fix in model/unified_model.py
+    this fixture depends on) and never touches the real committed-ignored
+    artifact if one happens to exist in a developer's working tree.
+
+    Individual tests that need to exercise the ARTIFACT-UNAVAILABLE path
+    (tests/test_unified_model.py::TestArtifactUnavailableFallback) already
+    monkeypatch UNIFIED_MODEL_PATH themselves at function scope -- pytest's
+    monkeypatch correctly overrides this session default for the duration of
+    that one test and restores it afterwards, so the two compose correctly.
+    """
+    import model.unified_model as um
+
+    artifact_dir = tmp_path_factory.mktemp("unified_model_test_artifact")
+    original_model_path = um.UNIFIED_MODEL_PATH
+    original_report_path = um.TRAINING_REPORT_PATH
+    um.UNIFIED_MODEL_PATH = artifact_dir / "unified_model.joblib"
+    um.TRAINING_REPORT_PATH = artifact_dir / "unified_model_training_report.json"
+    um.train_unified_model()
+    um.reset_live_unified_model_cache()
+
+    yield um.UNIFIED_MODEL_PATH
+
+    um.UNIFIED_MODEL_PATH = original_model_path
+    um.TRAINING_REPORT_PATH = original_report_path
+    um.reset_live_unified_model_cache()
+
+
 @pytest.fixture(autouse=True)
 def _force_mock_llm_provider_by_default(monkeypatch):
     """The suite must stay runnable offline regardless of the developer's
