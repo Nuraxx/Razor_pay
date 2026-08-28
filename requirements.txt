@@ -1,6 +1,23 @@
 setuptools==75.6.0
-fastapi==0.115.6
-starlette==0.41.3  # explicit -- see the streamlit note below on why this exact version matters
+# HARDENING PASS (dependency security review): fastapi==0.115.6 pinned
+# starlette<0.42.0 (Requires-Dist), which made it impossible to take any
+# starlette release containing the several CVE fixes `pip-audit` flagged
+# against starlette==0.41.3 (fix versions ranging up to 1.3.1). Verified via
+# each intermediate release's own Requires-Dist metadata (not guessed):
+# fastapi's starlette upper bound is lifted entirely starting at
+# fastapi==0.133.0 (`Requires-Dist: starlette>=0.40.0`, no ceiling) --
+# chosen as the SMALLEST fastapi bump that unblocks a patched starlette,
+# rather than jumping to fastapi's own latest (0.141.1 at the time of this
+# pass). starlette==1.3.1 is the lowest version at or above every fix
+# version pip-audit reported for 0.41.3. streamlit==1.56.0 (see its own note
+# below) has no starlette ceiling of its own, so it is unaffected either
+# way. Verified: `pip check` clean, `pip-audit` reports zero starlette
+# findings, full test suite passes (twice), FastAPI starts and /health
+# returns 200, Streamlit starts and serves HTTP 200 on its root route --
+# see the pre-submission hardening-pass report for the full compatibility
+# evidence.
+fastapi==0.133.0
+starlette==1.3.1
 uvicorn[standard]==0.34.0
 razorpay==1.4.2
 sqlalchemy==2.0.36
@@ -28,11 +45,13 @@ google-genai==2.19.0
 
 # Dashboard UI. Pinned to 1.56.0 specifically: newer Streamlit
 # releases (1.57+) unconditionally import an optional starlette-based ASGI
-# server at package-import time, which needs starlette>=0.46 -- directly
-# incompatible with fastapi==0.115.6's starlette<0.42.0 pin above. 1.56.0 is
-# the newest release where that starlette integration is still an opt-in
-# "extra" (not imported by default), so it coexists with the existing
-# starlette==0.41.3 already pinned by fastapi. Verified: `pip check` clean,
-# full test suite (358/358) unaffected at the time this pin was made.
+# server at package-import time, which needs starlette>=0.46. That WOULD
+# now be satisfied by starlette==1.3.1 above (HARDENING PASS: fastapi's own
+# starlette ceiling that originally forced this note -- fastapi==0.115.6's
+# starlette<0.42.0 -- no longer exists at fastapi==0.133.0+), but bumping
+# streamlit itself was never a security requirement and is out of scope for
+# that pass; 1.56.0 remains the last version verified end-to-end here
+# (dashboard boots, HTTP 200 on root, full test suite passes). Revisit if a
+# future pass has a concrete reason to move past it.
 streamlit==1.56.0
 plotly==6.9.0

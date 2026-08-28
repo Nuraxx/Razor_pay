@@ -49,6 +49,21 @@ class TestMcNemarTest:
         assert result.only_b_recovered == 0
         assert 0.0 < result.p_value <= 1.0
 
+    def test_balanced_b_and_c_discordant_pairs(self):
+        """HARDENING PASS: b == c (nonzero, evenly split discordant pairs) --
+        the exact binomial test's mode is at k=n/2, so an evenly-balanced
+        split is the LEAST extreme possible outcome and always yields
+        p_value == 1.0 exactly (verified independently against
+        scipy.stats.binomtest(6, n=12, p=0.5) directly, not merely asserted
+        by construction)."""
+        outcomes_a = [True] * 6 + [False] * 6 + [True] * 3 + [False] * 3
+        outcomes_b = [False] * 6 + [True] * 6 + [True] * 3 + [False] * 3
+        result = mcnemar_test(outcomes_a, outcomes_b, policy_a="A", policy_b="B")
+        assert result.only_a_recovered == 6
+        assert result.only_b_recovered == 6
+        assert result.method == "exact_binomial"
+        assert result.p_value == pytest.approx(1.0)
+
     def test_both_b_and_c_zero_no_discordant_pairs(self):
         # Two policies that agree on every single event -- no discordant pairs at all.
         outcomes_a = [True, False, True, True, False]
@@ -128,6 +143,31 @@ class TestBootstrapDeltaCI:
         r1 = bootstrap_delta_ci(values_a, values_b, policy_a="A", policy_b="B", metric_name="rs", seed=1, n_resamples=500)
         r2 = bootstrap_delta_ci(values_a, values_b, policy_a="A", policy_b="B", metric_name="rs", seed=2, n_resamples=500)
         assert (r1.lower_bound, r1.upper_bound) != (r2.lower_bound, r2.upper_bound)
+
+    def test_resampling_is_paired_not_independent(self):
+        """HARDENING PASS: explicit regression guard for "resample EVENT
+        INDICES, not the two value arrays independently"
+        (`bootstrap_delta_ci`'s own docstring contract). 8 DISTINCT-valued
+        events whose per-event delta (values_a[i] - values_b[i]) is FIXED at
+        exactly +5. Correct PAIRED resampling always draws the same index
+        for both arrays, so values_a[idx]-values_b[idx] == 5 for every draw
+        regardless of which events get picked -- the bootstrap distribution
+        must therefore collapse to a ZERO-WIDTH interval at exactly 5*8=40,
+        even though the underlying values themselves vary a lot (0..75).
+        If the implementation were changed to resample values_a and
+        values_b with two INDEPENDENT index draws, the mismatched pairs
+        pulled from these genuinely different-valued arrays would produce
+        real variance across resamples -- lower_bound would no longer equal
+        upper_bound -- so this assertion fails under that regression,
+        unlike a same-valued-arrays test (e.g. the zero-variance case below)
+        where independent resampling could coincidentally still look
+        zero-width."""
+        values_b = [0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0]
+        values_a = [v + 5.0 for v in values_b]
+        result = bootstrap_delta_ci(values_a, values_b, policy_a="A", policy_b="B", metric_name="rs", n_resamples=5000, seed=11)
+        assert result.point_estimate == pytest.approx(5.0 * 8)
+        assert result.lower_bound == pytest.approx(5.0 * 8)
+        assert result.upper_bound == pytest.approx(5.0 * 8)
 
     def test_toy_synthetic_data_known_behavior(self):
         # values_a is always exactly 10 more than values_b at every paired

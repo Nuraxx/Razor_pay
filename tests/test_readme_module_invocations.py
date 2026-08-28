@@ -10,8 +10,8 @@ packages with absolute, project-rooted imports (e.g.
 directly (`python path/to/file.py`) puts only that file's own directory on
 sys.path[0], not the repository root -- only `python -m package.module`
 (sys.path[0] = the current working directory, the repo root when invoked as
-documented) resolves those imports. The README now documents all four of
-these commands in `-m` form.
+documented) resolves those imports. The README now documents all commands in
+`-m` form.
 
 These tests reproduce the exact failure surface (import-time
 ModuleNotFoundError) FAST, without running each script's full `main()` (real
@@ -22,6 +22,19 @@ regression test far too slow to run on every `pytest tests/` invocation).
 exact same import machinery `-m` uses, but the module's own
 `if __name__ == "__main__": main()` guard never fires, so only the
 top-level import statements (the thing that was actually broken) run.
+
+HARDENING PASS follow-up: a later re-evaluation found `model.train`,
+`model.train_candidate_model`, and `model.train_ranking_model` (all three
+import sibling `model.*` modules with the exact same absolute,
+project-rooted style -- `from model.calibrate import ...`,
+`from model.preprocessing import ...`, `from model.candidate_preprocessing
+import ...` -- confirmed by reading each file) were left undocumented here,
+even though the README's §8 table and top summary line both referenced them
+in the same broken direct-file form this whole module exists to guard
+against (now fixed in README.md alongside this test). Reproduced directly:
+`./venv/bin/python model/train.py` (and the other two) raise
+`ModuleNotFoundError: No module named 'model'`, identically to the three
+modules already covered below.
 """
 from __future__ import annotations
 
@@ -33,6 +46,9 @@ PREVIOUSLY_BROKEN_UNDER_DIRECT_EXECUTION = [
     "data.generate_counterfactual_dataset",
     "model.train_latent_target_model",
     "evaluation.evaluate_latent_target_policy",
+    "model.train",
+    "model.train_candidate_model",
+    "model.train_ranking_model",
 ]
 
 ALSO_DOCUMENTED_VIA_DASH_M = [
@@ -58,6 +74,9 @@ def test_readme_no_longer_documents_the_broken_direct_file_invocation_form():
         "python data/generate_counterfactual_dataset.py",
         "python model/train_latent_target_model.py",
         "python evaluation/evaluate_latent_target_policy.py",
+        "python model/train.py",
+        "python model/train_candidate_model.py",
+        "python model/train_ranking_model.py",
     ]
     for form in broken_forms:
         assert form not in readme, f"README still documents the broken direct-file invocation: {form!r}"

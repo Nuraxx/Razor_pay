@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, Request, Response
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -146,18 +147,43 @@ async def razorpay_webhook(request: Request, db: Session = Depends(get_db)) -> R
         signature_verified=True,
         raw_payload=raw_body.decode("utf-8", errors="replace"),
     )
-    db.add(raw_event)
-    db.flush()  # populate raw_event.id before referencing it in the audit log
+    # HARDENING PASS (concurrency audit): step 4's SELECT above and this
+    # INSERT are not atomic -- two genuinely simultaneous deliveries of the
+    # SAME event_id can both pass the pre-insert existence check before
+    # either commits (reproduced deterministically with real concurrent
+    # threads against a shared connection -- see
+    # tests/test_webhook_concurrency.py). The `razorpay_event_id` UNIQUE
+    # constraint (app/models.py::RawEvent) is what actually prevents two
+    # rows from ever existing; this except turns the LOSING request's
+    # database-level conflict into the exact same idempotent "duplicate"
+    # response the pre-check path already returns, instead of an unhandled
+    # exception. It never treats a genuine, unrelated database failure as a
+    # false "duplicate": if the re-query below does NOT find a row (i.e. the
+    # conflict wasn't actually caused by a race winner), the original
+    # exception is re-raised unchanged.
+    try:
+        db.add(raw_event)
+        db.flush()  # populate raw_event.id before referencing it in the audit log
 
-    db.add(
-        AuditLog(
-            raw_event_id=raw_event.id,
-            action="webhook_received_and_stored",
-            reason=f"event_type={event_type} error_reason={payment_entity.get('error_reason')}",
-            actor="system",
+        db.add(
+            AuditLog(
+                raw_event_id=raw_event.id,
+                action="webhook_received_and_stored",
+                reason=f"event_type={event_type} error_reason={payment_entity.get('error_reason')}",
+                actor="system",
+            )
         )
-    )
-    db.commit()
+        db.commit()
+    except (IntegrityError, OperationalError):
+        db.rollback()
+        existing = db.query(RawEvent).filter(RawEvent.razorpay_event_id == event_id).first()
+        if existing is None:
+            raise  # not actually a duplicate-delivery race -- a genuine DB failure, must not be hidden
+        log.info(
+            "Duplicate webhook ignored (lost a concurrent insert race). event_id=%s already stored as raw_events.id=%s",
+            event_id, existing.id,
+        )
+        return Response(status_code=200, content="duplicate, already processed")
 
     log.info(
         "Stored event_type=%s event_id=%s payment_id=%s error_reason=%s (raw_events.id=%s)",
