@@ -171,9 +171,37 @@ FallbackMode = Literal[
 # deviation is ever TAKEN, and every deviation this architecture can take is
 # either unsafe (ALWAYS mode) or a structural no-op (the two KEEP_* modes).
 # With the safe mode, margin_threshold=0.0 and margin_threshold=100.0 select
-# identically; 0.0 is kept as the plainest, most self-explanatory value, and
-# is exactly what evaluation/evaluate_decision_engine_v4.py's validation-only
-# search (re-run after the economic correction, see finding above) selects.
+# identically; 0.0 is kept as the plainest, most self-explanatory value.
+#
+# VALIDATION-CONFIGURATION RECONCILIATION (later pass -- see README "policy-v4:
+# validation-configuration reconciliation" and evaluation/evaluate_decision_engine_v4.py
+# ::select_deployed_configuration / decide_deployed_config): after the
+# synthetic dataset was rescaled to 1,500 subscriptions, the raw validation
+# SEARCH argmax stopped matching this default -- it now prefers
+# margin_threshold=100.0, ALWAYS_FALLBACK_WHEN_BELOW_MARGIN, which forces a
+# rule_based_fallback decision on 99.36% of validation events (0.64% model-
+# direct) -- i.e. it is mechanically indistinguishable from discarding Model
+# B and always trusting Rule-Based (confirmed: its selections match
+# rule_based_baseline's own picks on 468/468 validation events exactly).
+# Investigated with the SAME bootstrap methodology this project already uses
+# for its headline test-set claim (evaluation/statistics.py::bootstrap_delta_ci,
+# seed=42, 10,000 resamples, 95% CI, paired VALIDATION events only, test set
+# untouched): that raw argmax's apparent +Rs11,241.87 edge over this default
+# is NOT statistically robust -- 95% CI is [-Rs8,922.43, +Rs33,081.60]
+# (crosses zero), and a paired McNemar test on the same validation events
+# gives p=0.79 (recovery RATE is not even directionally in the argmax's
+# favor: 67.52% vs this default's 68.38%). The entire aggregate Rs edge is
+# concentrated in a handful of large-amount events (the top 2 alone
+# contribute ~82% of it) -- a small-sample variance artifact of one
+# stochastic outcome draw, not a repeatable effect, and it disagrees with
+# Model B's own latent-value estimate (which favors THIS default,
+# Rs206,959.97 vs Rs204,267.52). select_deployed_configuration() therefore
+# only ever promotes a fresh validation-search argmax over this
+# structurally-safe default when its improvement clears that same
+# bootstrap-CI-robustness bar (lower_bound > 0) -- deterministic,
+# reproducible from code, VALIDATION-only, never test-informed. It did not
+# clear that bar on this dataset, so this default stands; it is a formalized,
+# code-enforced conclusion now, not merely an assumption.
 DEFAULT_MARGIN_THRESHOLD_RS = 0.0
 DEFAULT_FALLBACK_MODE: FallbackMode = FALLBACK_MODE_KEEP_UNLESS_CLEAR
 DEFAULT_FALLBACK_ADVANTAGE_THRESHOLD_RS = 0.0

@@ -595,3 +595,110 @@ def test_oracle_schedule_never_exceeds_max_retry_attempts(latent_splits, real_mo
     chosen_config, _results = select_validation_configuration(val_df, real_model)
     events = evaluate_events_v4(test_df, real_model, chosen_config)
     assert (events["oracle_policy__n_attempts"] <= MAX_RETRY_ATTEMPTS).all()
+
+
+# ---------------------------------------------------------------------------
+# VALIDATION-CONFIGURATION RECONCILIATION: decide_deployed_config's
+# bootstrap-robustness gate (pure decision logic -- fast, no ML pipeline
+# needed) and select_deployed_configuration's end-to-end wiring.
+# ---------------------------------------------------------------------------
+
+class TestDecideDeployedConfig:
+    """decide_deployed_config is a pure function -- exercised directly with
+    hand-crafted inputs, no dataset/model dependency. Formalizes the answer
+    to "why does the deployed config differ from the validation-search
+    argmax?": only a BOOTSTRAP-CI-ROBUST improvement (lower_bound > 0) may
+    override the structurally-safe default; a merely higher point estimate
+    on one stochastic validation draw may not."""
+
+    def test_returns_argmax_when_it_already_matches_baseline(self):
+        from evaluation.evaluate_decision_engine_v4 import decide_deployed_config
+
+        cfg = {"margin_threshold": 0.0, "fallback_mode": FALLBACK_MODE_KEEP_UNLESS_CLEAR, "fallback_advantage_threshold": 0.0}
+        deployed, reason = decide_deployed_config(cfg, cfg, robustness_ci=None)
+        assert deployed == cfg
+        assert reason == "validation_search_argmax_matches_structural_safety_baseline"
+
+    def test_retains_baseline_when_argmax_edge_is_not_bootstrap_robust(self):
+        # Regression test for the exact scenario this reconciliation fixed:
+        # a validation argmax with a positive point estimate but a bootstrap
+        # CI that crosses zero (not statistically distinguishable from the
+        # baseline) must NOT override the structurally-safe default.
+        from evaluation.evaluate_decision_engine_v4 import decide_deployed_config
+
+        baseline = {"margin_threshold": 0.0, "fallback_mode": FALLBACK_MODE_KEEP_UNLESS_CLEAR, "fallback_advantage_threshold": 0.0}
+        argmax = {"margin_threshold": 100.0, "fallback_mode": FALLBACK_MODE_ALWAYS, "fallback_advantage_threshold": 0.0}
+        not_robust_ci = {"point_estimate": 11241.87, "lower_bound": -8922.43, "upper_bound": 33081.60}
+        deployed, reason = decide_deployed_config(argmax, baseline, not_robust_ci)
+        assert deployed == baseline
+        assert reason == "validation_search_argmax_not_bootstrap_robust_retaining_structural_safety_baseline"
+
+    def test_promotes_argmax_when_edge_is_bootstrap_robust(self):
+        # Symmetric case: the rule is not hardcoded to always keep the
+        # baseline -- a genuinely robust improvement (CI entirely above
+        # zero) must be adopted.
+        from evaluation.evaluate_decision_engine_v4 import decide_deployed_config
+
+        baseline = {"margin_threshold": 0.0, "fallback_mode": FALLBACK_MODE_KEEP_UNLESS_CLEAR, "fallback_advantage_threshold": 0.0}
+        argmax = {"margin_threshold": 5.0, "fallback_mode": FALLBACK_MODE_ALWAYS, "fallback_advantage_threshold": 0.0}
+        robust_ci = {"point_estimate": 5000.0, "lower_bound": 500.0, "upper_bound": 9500.0}
+        deployed, reason = decide_deployed_config(argmax, baseline, robust_ci)
+        assert deployed == argmax
+        assert reason == "validation_search_argmax_is_bootstrap_robust_improvement_over_structural_safety_baseline"
+
+    def test_lower_bound_exactly_zero_is_not_robust(self):
+        # Strict > 0, not >=, matching decide_deployed_config's own docstring
+        # ("lower_bound > 0") -- a CI edge that just touches zero is still an
+        # inconclusive result, not a proven improvement.
+        from evaluation.evaluate_decision_engine_v4 import decide_deployed_config
+
+        baseline = {"margin_threshold": 0.0, "fallback_mode": FALLBACK_MODE_KEEP_UNLESS_CLEAR, "fallback_advantage_threshold": 0.0}
+        argmax = {"margin_threshold": 5.0, "fallback_mode": FALLBACK_MODE_ALWAYS, "fallback_advantage_threshold": 0.0}
+        boundary_ci = {"point_estimate": 100.0, "lower_bound": 0.0, "upper_bound": 200.0}
+        deployed, _reason = decide_deployed_config(argmax, baseline, boundary_ci)
+        assert deployed == baseline
+
+
+def test_select_deployed_configuration_is_deterministic(latent_splits, real_model):
+    from evaluation.evaluate_decision_engine_v4 import select_deployed_configuration
+
+    _train, val_df, _test_df = latent_splits
+    result1 = select_deployed_configuration(val_df, real_model)
+    result2 = select_deployed_configuration(val_df, real_model)
+    assert result1["deployed_config"] == result2["deployed_config"]
+    assert result1["decision_reason"] == result2["decision_reason"]
+    assert result1["validation_search_argmax"] == result2["validation_search_argmax"]
+    assert result1["robustness_ci_validation_only"] == result2["robustness_ci_validation_only"]
+
+
+def test_select_deployed_configuration_never_touches_test_split():
+    import inspect
+
+    from evaluation.evaluate_decision_engine_v4 import select_deployed_configuration
+
+    params = list(inspect.signature(select_deployed_configuration).parameters)
+    assert "test_df" not in params and "test" not in params
+
+
+def test_select_deployed_configuration_structural_safety_baseline_matches_frozen_defaults(latent_splits, real_model):
+    from evaluation.evaluate_decision_engine_v4 import select_deployed_configuration
+
+    _train, val_df, _test_df = latent_splits
+    result = select_deployed_configuration(val_df, real_model)
+    assert result["structural_safety_baseline"] == {
+        "margin_threshold": DEFAULT_MARGIN_THRESHOLD_RS,
+        "fallback_mode": DEFAULT_FALLBACK_MODE,
+        "fallback_advantage_threshold": DEFAULT_FALLBACK_ADVANTAGE_THRESHOLD_RS,
+    }
+
+
+def test_select_deployed_configuration_robustness_ci_present_iff_argmax_differs_from_baseline(latent_splits, real_model):
+    from evaluation.evaluate_decision_engine_v4 import select_deployed_configuration
+
+    _train, val_df, _test_df = latent_splits
+    result = select_deployed_configuration(val_df, real_model)
+    if result["validation_search_argmax"] == result["structural_safety_baseline"]:
+        assert result["robustness_ci_validation_only"] is None
+    else:
+        assert result["robustness_ci_validation_only"] is not None
+        assert "lower_bound" in result["robustness_ci_validation_only"]

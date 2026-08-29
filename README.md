@@ -560,16 +560,29 @@ OLLAMA_BASE_URL=http://localhost:11434   # only used when LLM_PROVIDER=ollama; n
 OLLAMA_MODEL=qwen3:14b                   # must already be pulled locally (`ollama pull qwen3:14b`)
 ```
 
-Exactly **three** LLM jobs exist anywhere in this codebase
+Three **required** LLM jobs exist for the core recovery workflow
 (`llm/service.py`): outreach microcopy generation, promise-to-pay reply
-parsing, and batch-level report narration. Nothing else calls an LLM —
-classification, candidate-time scoring, and compliance are all deterministic
-or model-driven, never LLM-driven. Verified directly in this audit: an LLM
-failure (unavailable, timeout, malformed JSON, schema-invalid JSON) never
-changes `classification_bucket`, `selected_candidate_type`, or
-`compliance_allowed` — the policy decision is persisted to the database
-*before* any LLM call is made, and no code path reads an LLM result back
-into a policy/compliance field (`recovery/orchestrator.py`, confirmed by
+parsing, and batch-level report narration — this is the complete set the
+project specification calls for, and the only LLM usage anywhere in the
+original (non-Track-03-extension) scope. On top of those three, one
+**optional** Track-03 extension job also exists and is explicitly labeled as
+such in code (`llm/__init__.py`, `llm/service.py`'s `# Job 4 (optional,
+Track-03)` heading): `generate_voice_script`, a spoken-register script for
+`recovery/voice.py`'s voice-recovery channel, used only by the revenue-risk
+extension (§3a), never by the core subscriptions pipeline. The optional 4th
+job is held to the exact same boundary as the three required ones — it
+cannot classify a failure, choose retry timing, modify a compliance
+decision, or override policy, any more than they can. Nothing else calls an
+LLM — classification, candidate-time scoring, and compliance are all
+deterministic or model-driven, never LLM-driven, for all four jobs alike.
+Verified directly in this audit: an LLM failure (unavailable, timeout,
+malformed JSON, schema-invalid JSON) never changes `classification_bucket`,
+`selected_candidate_type`, or `compliance_allowed` — the policy decision is
+persisted to the database *before* any LLM call is made
+(`policy/decision_engine_v4.py::decide_engine_v4` takes no `llm` parameter
+at all — there is no argument for an LLM output to flow through even if a
+caller wanted to), and no code path reads an LLM result back into a
+policy/compliance field (`recovery/orchestrator.py`, confirmed by
 `tests/test_orchestrator.py::test_llm_failure_never_changes_selected_candidate_or_compliance`
 and re-confirmed by direct execution in this audit — see the final report).
 
@@ -1186,26 +1199,67 @@ Model B alone" property (§16b's STRUCTURAL FINDING) is a mathematical
 property of the mechanism, not data-dependent, and it reproduced exactly as
 designed with a completely different trained model.
 
-**CAVEAT — a real finding this pass surfaced but explicitly did NOT act on.**
-`evaluate_decision_engine_v4.py::main()`'s own validation-only search
-(unmodified, pre-existing code — see §16b) was re-run against the new
-validation split as part of routine reproduction, and it picked a DIFFERENT
-configuration than the currently-frozen one: `margin_threshold=100.0,
-fallback_mode=always_fallback_when_below_margin` — literally the OLD,
+**RESOLVED (documentation/evaluation reconciliation pass, then formalized by
+a follow-up validation-configuration reconciliation pass) — this section
+used to carry a live caveat here; kept below as history, not current
+behavior.** `evaluate_decision_engine_v4.py::main()`'s own validation-only
+search (unmodified, pre-existing code — see §16b) re-derives its raw argmax
+fresh every run, and on this population it picks a DIFFERENT configuration
+than the frozen default: `margin_threshold=100.0,
+fallback_mode=always_fallback_when_below_margin` (108 configurations
+searched, VALIDATION split, n=468 events) — literally the OLD,
 previously-rejected "blind swap" mechanism §16b's own economic correction
 existed to move away from (see that section's ECONOMIC-CORRECTION FINDING).
-This happened because the retrained model shifted the validation-set
-landscape enough that, on this specific validation split, blind-swapping to
-Rule-Based happens to score highest by realized ₹ — a real, honestly
-disclosed property of the new model+data, not a bug in the search. **This
-pass deliberately did NOT follow that suggestion**: `policy/decision_engine_v4.py`'s
-frozen defaults were never touched, and every number in the two tables above
-uses the frozen config, evaluated directly (bypassing `main()`'s own
-auto-selected config for exactly this reason) — "do not change the policy"
-and "do not tune against TEST" both take precedence over chasing a better-
-looking validation-search result. Whether the frozen config should be
-re-validated on this larger population is a real open question, explicitly
-left for a future, dedicated pass — never decided inside this data-only one.
+At `margin=100` the gate fires on 465/468 (99.4%) validation events, so this
+"winning" configuration is mechanically almost indistinguishable from
+discarding Model B entirely and always trusting Rule-Based's own pick. The
+earlier fix in this section made `main()` always evaluate Phase 2 against
+`policy/decision_engine_v4.py`'s frozen default rather than this raw argmax
+— closing the README/JSON reproducibility gap — but left *why* the deployed
+config should differ from the validation-search winner as an unstated
+assumption, not a documented decision rule. A skeptical reader could
+reasonably ask: "if validation picked something else, why deploy the frozen
+one?"
+
+**policy-v4: validation-configuration reconciliation.** That question is now
+answered explicitly, in code:
+`evaluate_decision_engine_v4.py::select_deployed_configuration` /
+`decide_deployed_config` only ever promote the raw validation-search argmax
+over the frozen, structurally-safe default (`margin_threshold=0.0,
+fallback_mode=keep_model_unless_rule_has_clear_advantage` — mathematically
+guaranteed, per §16b's STRUCTURAL FINDING, to never select a worse candidate
+than Model B's own best pick, independent of dataset or split) when the
+argmax's improvement is a statistically ROBUST one — a bootstrap 95% CI
+(paired-event resampling on VALIDATION events, seed=42, 10,000 resamples;
+the exact same method and parameters `evaluation/statistics.py::bootstrap_delta_ci`
+already uses for this project's headline TEST-set claim below) whose lower
+bound exceeds zero, never merely a higher one-shot point estimate on a
+single stochastic validation draw. On this dataset it does not clear that
+bar: the argmax's apparent edge over the frozen default is **+₹11,241.87**
+on validation (₹202,883.72 vs ₹191,641.85), but the bootstrap 95% CI is
+**[−₹8,922.43, +₹33,081.60]** — it crosses zero, so the improvement is not
+distinguishable from validation-sample noise. (For additional context, not
+itself part of the decision rule: the argmax's own realized *recovery rate*
+on validation is actually lower than the frozen default's, 67.5% vs 68.4%,
+and Model B's own latent-value estimate also favors the frozen default,
+₹206,959.97 vs ₹204,267.52 — independent signals pointing the same
+direction.) `deployed_config` is therefore the frozen default, exactly as
+before — but this is now a **formalized, reproducible, symmetric decision
+rule**, pinned by `tests/test_decision_engine_v4.py::TestDecideDeployedConfig`
+and `tests/test_evaluation_report_consistency.py::TestValidationConfigurationReconciliationConsistency`,
+not an unstated assumption: had the argmax's edge been bootstrap-robust,
+this same rule would have promoted it instead. Both the raw argmax and the
+full robustness test are persisted in
+`evaluation/reports/decision_engine_v4_evaluation.json`'s
+`validation_configuration_selection` block (`validation_search_argmax`,
+`structural_safety_baseline`, `robustness_ci_validation_only`,
+`decision_reason`) for transparency, and the held-out TEST split plays no
+part in this decision. Running the plain, documented reproduce command below
+regenerates the exact two tables above directly, with no manual bypass and
+no hand-edited JSON. Whether the frozen default itself should someday be
+re-validated on an even larger population remains open — explicitly out of
+scope here, since the evidence on this population doesn't support changing
+it, and this pass is a methodology fix, not a policy retune.
 
 **Honest verdict.** Regression metrics got measurably worse in absolute
 terms; ranking metrics (top-1, MRR, mean rank) got measurably better;
@@ -1225,10 +1279,9 @@ Reproduce: `./venv/bin/python -m data.generate_synthetic_dataset && ./venv/bin/p
 candidate-aware/ranking model generations too, so it needs both of their
 artifacts on disk as well — verified end to end from a genuinely fresh
 clone, see BUG-3 in the pre-submission audit report)
-for regression/ranking; the economic table above requires calling
-`evaluate_events_v4(test_df, model, FROZEN_CONFIG)` directly with the frozen
-config (not `evaluate_decision_engine_v4.py`'s own `main()`) for the reason
-stated in the caveat.
+for regression/ranking; the economic table above now reproduces directly
+from `./venv/bin/python -m evaluation.evaluate_decision_engine_v4`'s own
+`main()` — no manual bypass needed (see the RESOLVED note above).
 
 ## 16a. Unified ML held-out evaluation
 

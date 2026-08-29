@@ -287,6 +287,72 @@ def select_validation_configuration(val_df: pd.DataFrame, model: dict) -> tuple[
     return chosen, results
 
 
+def decide_deployed_config(
+    validation_search_argmax: dict, structural_safety_baseline: dict, robustness_ci: dict | None,
+) -> tuple[dict, str]:
+    """VALIDATION-CONFIGURATION RECONCILIATION -- pure selection-rule function
+    answering "why is the deployed configuration different from the
+    validation-search winner?" (see policy/decision_engine_v4.py's
+    DEFAULT_MARGIN_THRESHOLD_RS comment and README "policy-v4:
+    validation-configuration reconciliation").
+
+    `structural_safety_baseline` (policy/decision_engine_v4.py's frozen
+    defaults) is mathematically guaranteed (STRUCTURAL FINDING) to never
+    select a candidate worse than Model B's own best pick. The raw
+    `validation_search_argmax` from select_validation_configuration() above
+    carries no such guarantee and can drift to a different winner whenever
+    the underlying dataset changes -- it is only trusted to REPLACE the
+    safety baseline when its apparent improvement is a statistically ROBUST
+    one (bootstrap 95% CI lower_bound > 0 on VALIDATION events, same paired-
+    event-resampling method/seed this project already uses for its headline
+    test-set claim -- evaluation/statistics.py::bootstrap_delta_ci), never
+    merely a higher one-shot point estimate on a single stochastic
+    validation draw. `robustness_ci` is `None` exactly when the two configs
+    are already identical (nothing to test). Deliberately a free-standing
+    pure function, independent of the data-dependent orchestration in
+    select_deployed_configuration below, so the decision logic itself is
+    directly unit-testable."""
+    if validation_search_argmax == structural_safety_baseline:
+        return dict(validation_search_argmax), "validation_search_argmax_matches_structural_safety_baseline"
+    if robustness_ci is not None and robustness_ci["lower_bound"] > 0:
+        return dict(validation_search_argmax), "validation_search_argmax_is_bootstrap_robust_improvement_over_structural_safety_baseline"
+    return dict(structural_safety_baseline), "validation_search_argmax_not_bootstrap_robust_retaining_structural_safety_baseline"
+
+
+def select_deployed_configuration(val_df: pd.DataFrame, model: dict) -> dict:
+    """Orchestrates the full VALIDATION-ONLY deployed-configuration decision:
+    runs select_validation_configuration()'s search unchanged, then applies
+    decide_deployed_config()'s bootstrap-robustness gate against
+    policy/decision_engine_v4.py's frozen structural-safety default. The held-
+    out test set is never touched by anything in this function."""
+    validation_search_argmax, search_results = select_validation_configuration(val_df, model)
+    structural_safety_baseline = {
+        "margin_threshold": DEFAULT_MARGIN_THRESHOLD_RS,
+        "fallback_mode": DEFAULT_FALLBACK_MODE,
+        "fallback_advantage_threshold": DEFAULT_FALLBACK_ADVANTAGE_THRESHOLD_RS,
+    }
+    robustness_ci = None
+    if validation_search_argmax != structural_safety_baseline:
+        run_argmax = _run_v4_for_all_events_with_realized(val_df, model, **validation_search_argmax).sort_values("event_id")
+        run_baseline = _run_v4_for_all_events_with_realized(val_df, model, **structural_safety_baseline).sort_values("event_id")
+        robustness_ci = bootstrap_delta_ci(
+            run_argmax["realized_amount_recovered"].to_numpy(), run_baseline["realized_amount_recovered"].to_numpy(),
+            policy_a="validation_search_argmax", policy_b="structural_safety_baseline",
+            metric_name="realized_rs_recovered_validation",
+            n_resamples=BOOTSTRAP_N_RESAMPLES, seed=BOOTSTRAP_SEED, confidence_level=BOOTSTRAP_CONFIDENCE_LEVEL,
+        ).to_dict()
+
+    deployed_config, decision_reason = decide_deployed_config(validation_search_argmax, structural_safety_baseline, robustness_ci)
+    return {
+        "deployed_config": deployed_config,
+        "decision_reason": decision_reason,
+        "validation_search_argmax": validation_search_argmax,
+        "structural_safety_baseline": structural_safety_baseline,
+        "robustness_ci_validation_only": robustness_ci,
+        "search_results": search_results,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Test-set evaluation across all 6 policies
 # ---------------------------------------------------------------------------
@@ -731,7 +797,7 @@ def summarize_economics(events: pd.DataFrame, realized_summary: dict) -> dict:
     return economics
 
 
-def build_stage_decomposition(events: pd.DataFrame, test_df: pd.DataFrame, model: dict, chosen_config: dict) -> dict:
+def build_stage_decomposition(events: pd.DataFrame, test_df: pd.DataFrame, model: dict, deployed_config: dict) -> dict:
     """Part-B-style decomposition (final pre-submission audit): isolates
     EXACTLY which stage of the deployed subscription decision path is
     responsible for the gap to Fixed Retry, on the SAME frozen TEST events
@@ -817,7 +883,7 @@ def build_stage_decomposition(events: pd.DataFrame, test_df: pd.DataFrame, model
             "to show the exact mechanism that caused the originally-reported Rs3298.87 gap -- it is NOT the "
             "current deployed policy (stage 6 is)."
         ),
-        "chosen_config": chosen_config,
+        "deployed_config": deployed_config,
         "stages": stages,
     }
 
@@ -853,39 +919,89 @@ def main() -> None:
     print("=== Phase 1: policy-v4 configuration search on VALIDATION ONLY ===")
     print("    (economic correction: primary key is now REALIZED Rs recovered on validation, not latent value alone -- see")
     print("    select_validation_configuration's docstring and policy/decision_engine_v4.py's ECONOMIC-CORRECTION FINDING)")
-    chosen_config, search_results = select_validation_configuration(val_df, model)
+    selection = select_deployed_configuration(val_df, model)
+    validation_search_argmax = selection["validation_search_argmax"]
+    structural_safety_baseline = selection["structural_safety_baseline"]
+    deployed_config = selection["deployed_config"]
+    search_results = selection["search_results"]
     ranked = sorted(search_results.values(), key=lambda r: (r["total_realized_value_selected_rs"], r["total_latent_value_selected_rs"]), reverse=True)
     for r in ranked[:15]:
-        is_chosen = r["margin_threshold"] == chosen_config["margin_threshold"] and r["fallback_mode"] == chosen_config["fallback_mode"] and r["fallback_advantage_threshold"] == chosen_config["fallback_advantage_threshold"]
-        marker = " <-- selected" if is_chosen else ""
+        is_argmax = (
+            r["margin_threshold"] == validation_search_argmax["margin_threshold"]
+            and r["fallback_mode"] == validation_search_argmax["fallback_mode"]
+            and r["fallback_advantage_threshold"] == validation_search_argmax["fallback_advantage_threshold"]
+        )
+        marker = " <-- validation search argmax" if is_argmax else ""
         print(f"  margin=Rs{r['margin_threshold']:<6} mode={r['fallback_mode']:<40} adv=Rs{r['fallback_advantage_threshold']:<6} total_realized=Rs{r['total_realized_value_selected_rs']:>10.2f} total_latent=Rs{r['total_latent_value_selected_rs']:>10.2f} n_fallback={r['n_fallback']:<3} n_no_action={r['n_no_action']}{marker}")
     print(f"  (showing top 15 of {len(search_results)} configurations searched)")
-    print(f"  CHOSEN: {chosen_config}")
-    frozen_matches = (
-        chosen_config["margin_threshold"] == DEFAULT_MARGIN_THRESHOLD_RS
-        and chosen_config["fallback_mode"] == DEFAULT_FALLBACK_MODE
-        and chosen_config["fallback_advantage_threshold"] == DEFAULT_FALLBACK_ADVANTAGE_THRESHOLD_RS
-    )
-    print(f"  Frozen config in policy/decision_engine_v4.py matches this search: {frozen_matches}")
+    print(f"  VALIDATION SEARCH ARGMAX (raw, re-derived every run): {validation_search_argmax}")
+    print(f"  STRUCTURAL SAFETY BASELINE (frozen default from policy/decision_engine_v4.py): {structural_safety_baseline}")
     print()
 
-    print("=== Phase 2: TEST evaluation (run once, frozen config) ===")
-    events = evaluate_events_v4(test_df, model, chosen_config)
+    # VALIDATION-CONFIGURATION RECONCILIATION: deployed_config is decided by
+    # select_deployed_configuration()/decide_deployed_config() above, NOT by
+    # blindly trusting validation_search_argmax -- see those functions'
+    # docstrings and policy/decision_engine_v4.py's DEFAULT_MARGIN_THRESHOLD_RS
+    # comment for the full, formal rule (a bootstrap-CI robustness gate on
+    # VALIDATION events only, reusing this project's own existing statistical
+    # methodology; the held-out test set plays no part in this decision).
+    print("=== Is the validation-search argmax a statistically robust win over the structural safety baseline? ===")
+    if selection["robustness_ci_validation_only"] is None:
+        print("  argmax == structural safety baseline -- nothing to test.")
+    else:
+        rc = selection["robustness_ci_validation_only"]
+        print(
+            f"  bootstrap 95% CI (VALIDATION events only, seed={rc['seed']}, {rc['n_resamples']} resamples): "
+            f"argmax - baseline = {rc['point_estimate']:+.2f} [{rc['lower_bound']:+.2f}, {rc['upper_bound']:+.2f}]"
+        )
+        print(f"  robust improvement (lower_bound > 0): {rc['lower_bound'] > 0}")
+    print(f"  DECISION: {selection['decision_reason']}")
+    deployed_config_matches_validation_search_argmax = deployed_config == validation_search_argmax
+    print(f"  DEPLOYED CONFIG (what Phase 2 below actually evaluates): {deployed_config}")
+    print()
+
+    print("=== Phase 2: TEST evaluation (run once, frozen deployed config) ===")
+    events = evaluate_events_v4(test_df, model, deployed_config)
     events.to_csv(REPORTS_DIR / "decision_engine_v4_test_set.csv", index=False)
 
     latent_summary = summarize_latent_economic(events)
     realized_summary = summarize_realized(events)
-    operational_summary = summarize_operational(events, chosen_config)
+    operational_summary = summarize_operational(events, deployed_config)
     contact_metrics = summarize_contact_and_intervention_metrics(events)
     cost_per_recovery = summarize_cost_per_recovery(events, contact_metrics)
     statistical_tests = summarize_statistical_tests(events)
     economics_summary = summarize_economics(events, realized_summary)
-    stage_decomposition = build_stage_decomposition(events, test_df, model, chosen_config)
+    stage_decomposition = build_stage_decomposition(events, test_df, model, deployed_config)
 
     report = {
         "label": "SYNTHETIC COUNTERFACTUAL EVALUATION -- does not measure real Razorpay recovery performance.",
         "validation_configuration_selection": {
-            "chosen": chosen_config, "top_15_by_realized_value": ranked[:15], "n_configurations_searched": len(search_results),
+            "deployed_config": deployed_config,
+            "decision_reason": selection["decision_reason"],
+            "deployed_config_source": (
+                "evaluation/evaluate_decision_engine_v4.py::select_deployed_configuration -- a VALIDATION-ONLY "
+                "bootstrap-CI robustness gate between validation_search_argmax and structural_safety_baseline (see "
+                "decide_deployed_config's docstring and policy/decision_engine_v4.py's DEFAULT_MARGIN_THRESHOLD_RS "
+                "comment for the full rule). This is what Phase 2 below actually evaluates. The held-out test set "
+                "plays no part in this decision."
+            ),
+            "validation_search_argmax": validation_search_argmax,
+            "validation_search_argmax_note": (
+                "The raw argmax of select_validation_configuration()'s validation-only search, re-derived fresh "
+                "every run against whatever the current train/validation split contains. Only promoted to "
+                "deployed_config when its improvement over structural_safety_baseline is bootstrap-CI-robust (see "
+                "robustness_ci_validation_only below) -- never substituted in merely for topping a single "
+                "validation draw's point estimate."
+            ),
+            "structural_safety_baseline": structural_safety_baseline,
+            "structural_safety_baseline_note": (
+                "policy/decision_engine_v4.py's frozen default. FALLBACK_MODE_KEEP_UNLESS_CLEAR at margin=0.0 is "
+                "mathematically guaranteed (STRUCTURAL FINDING) to never select a candidate worse than Model B's "
+                "own best pick, regardless of dataset size or which split validation happens to draw."
+            ),
+            "robustness_ci_validation_only": selection["robustness_ci_validation_only"],
+            "deployed_config_matches_validation_search_argmax": deployed_config_matches_validation_search_argmax,
+            "top_15_by_realized_value": ranked[:15], "n_configurations_searched": len(search_results),
             "selection_metric": "total_realized_value_selected_rs (economic correction -- previously total_latent_value_selected_rs alone; see policy/decision_engine_v4.py's ECONOMIC-CORRECTION FINDING)",
         },
         "latent_economic": latent_summary,
