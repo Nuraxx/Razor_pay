@@ -76,6 +76,7 @@ from ui.components import (
     sidebar_brand,
     sidebar_status_block,
     source_tag,
+    status_badge,
     timeline_step,
     top_bar,
 )
@@ -279,10 +280,8 @@ def _render_latest_recovery_pipeline(snapshot: dict | None) -> None:
         )
         return
 
-    if snapshot["is_live_razorpay_id"]:
-        id_label = mono(snapshot["razorpay_event_id"])
-    else:
-        id_label = f'{mono(snapshot["razorpay_event_id"])} <span class="ar-tag ar-tag-demo">SYNTHETIC / TEST ID</span>'
+    origin_tag_class = "ar-tag-live" if snapshot["is_live_razorpay_id"] else "ar-tag-demo"
+    id_label = f'{mono(snapshot["razorpay_event_id"])} <span class="ar-tag {origin_tag_class}">{snapshot["origin_label"]}</span>'
     st.markdown(
         f'<div class="ar-field-row"><span class="ar-field-label">Razorpay event ID</span>'
         f'<span class="ar-field-value">{id_label}</span></div>',
@@ -430,6 +429,7 @@ def _overview_live_fragment() -> None:
             "Amount": events_df["amount_rupees"].map(money),
             "Failure reason": events_df["error_reason"].fillna("—"),
             "Subscription": events_df["subscription_id"].fillna("—"),
+            "Origin": events_df["origin"],
         }
     )
     st.dataframe(table, width='stretch', height=300, hide_index=True)
@@ -443,9 +443,9 @@ def _overview_live_fragment() -> None:
 
 
 def page_overview() -> None:
-    section_header("Recovery Overview", "Live payment-recovery operations and synthetic benchmark performance, kept strictly separate.")
+    section_header("Recovery Overview", "Live Razorpay TEST MODE payment-recovery operations and synthetic benchmark performance, kept strictly separate.")
 
-    st.markdown("##### Live operations")
+    st.markdown("##### Live test-mode operations")
     _overview_live_fragment()
 
     st.markdown("<div style='height:0.45rem'></div>", unsafe_allow_html=True)
@@ -515,7 +515,7 @@ def render_live_event_detail(event_id) -> None:
         comm = llm_rows[-1] if llm_rows else None
         field_group("Actions")
         field_row("Payment action", "no_action" if policy_row.selected_candidate_type == "NO_ACTION" else "retry_scheduled")
-        field_row("Communication action", ("sent" if comm.success else "fallback_used") if comm else "—")
+        field_row("Communication action", data.humanize_communication_action(("sent" if comm.success else "fallback_used") if comm else None))
         field_row("LLM success", ("Yes" if comm.success else "No") if comm else "—")
 
     st.markdown("<div style='height:0.3rem'></div>", unsafe_allow_html=True)
@@ -548,7 +548,8 @@ def _recovery_queue_fragment() -> None:
                 "Classification": df["classification_bucket"],
                 "Recommended retry": df["selected_candidate_type"],
                 "Retry time": df["selected_candidate_datetime"].map(data.format_ts),
-                "Communication": df["communication_action"],
+                "Retry status": df["retry_status"],
+                "Communication": df["communication_action"].map(data.humanize_communication_action),
                 "Final status": df["final_status"],
                 "Updated": df["decided_at"].map(data.format_ts),
             }
@@ -557,12 +558,20 @@ def _recovery_queue_fragment() -> None:
         event = st.dataframe(
             table, width='stretch', height=380, hide_index=True,
             on_select="rerun", selection_mode="single-row", key="live_recovery_queue_table",
+            column_config={"Retry status": st.column_config.TextColumn(help=data.RETRY_STATUS_HELP)},
         )
         selected_rows = event.selection.rows if event and event.selection else []
         if selected_rows:
             render_live_event_detail(table.iloc[selected_rows[0]]["Event ID"])
         else:
             empty_state("Select a row above to see its full decision detail.")
+        if (df["retry_status"] == "OVERDUE").any():
+            st.caption(
+                "OVERDUE: the recommended retry time has passed but no execution outcome has been recorded yet. "
+                "This system only ever records a retry recommendation — it never places a live Razorpay retry "
+                "call — so this is expected until a real payment.captured webhook (or, for demo data, the demo "
+                "generator) confirms an outcome."
+            )
 
     st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
     unrouted = _run_live("recovery_queue_unrouted", data.get_live_unrouted_raw_events_df, limit=25)
@@ -622,6 +631,7 @@ def _payment_events_fragment() -> None:
         {
             "Timestamp": filtered["received_at"].map(data.format_ts),
             "Razorpay Event ID": filtered["razorpay_event_id"],
+            "Origin": filtered["origin"],
             "Payment ID": filtered["payment_id"],
             "Order ID": filtered["order_id"],
             "Subscription ID": filtered["subscription_id"].fillna("—"),
@@ -629,7 +639,7 @@ def _payment_events_fragment() -> None:
             "Currency": filtered["currency"],
             "Error Code": filtered["error_code"].fillna("—"),
             "Error Reason": filtered["error_reason"].fillna("—"),
-            "Signature Verified": filtered["signature_verified"].map(lambda v: "Yes" if v else "No"),
+            "Signature": filtered["signature_status"],
         }
     )
     st.caption(f"Showing {len(table)} of {len(df)} stored raw events.")
@@ -660,7 +670,12 @@ def _payment_events_fragment() -> None:
     with d3:
         field_group("Delivery")
         field_row("Received", data.format_ts(row["received_at"]))
-        field_row("Signature verified", "Yes" if row["signature_verified"] else "No")
+        field_row("Origin", row["origin"])
+        st.markdown(
+            f'<div class="ar-field-row"><span class="ar-field-label">Signature</span>'
+            f'<span class="ar-field-value">{status_badge(row["signature_status"])}</span></div>',
+            unsafe_allow_html=True,
+        )
         field_row("Subscription ID", row["subscription_id"], mono=True)
 
     with st.expander("Raw webhook payload (as stored — never includes the webhook secret or API keys)"):
@@ -696,7 +711,7 @@ def _analytics_live_operations_fragment() -> None:
     with cols[3]:
         n_sent = int((df["communication_action"] == "sent").sum()) if not df.empty else 0
         n_blocked = int((df["communication_action"] == "blocked").sum()) if not df.empty else 0
-        kpi_card("Communication outcomes", f"{n_sent} sent / {n_blocked} blocked", "live LLMInvocation + compliance rows")
+        kpi_card("Communication outcomes", f"{n_sent} generated / {n_blocked} blocked", "live LLMInvocation + compliance rows")
 
     if df.empty:
         empty_state("No live recovery decisions yet to summarize.")
@@ -704,16 +719,18 @@ def _analytics_live_operations_fragment() -> None:
     c1, c2 = st.columns(2, gap="small")
     with c1:
         st.markdown("###### Candidate selection")
-        counts = df["selected_candidate_type"].value_counts()
+        counts = data.complete_candidate_counts(df["selected_candidate_type"])
         fig = go.Figure(go.Bar(x=counts.index, y=counts.values, marker_color="#2F4CDD"))
         fig.update_layout(height=240, margin=dict(l=10, r=10, t=10, b=10), plot_bgcolor="white", paper_bgcolor="white")
         st.plotly_chart(fig, width='stretch')
+        st.caption(f"n = {len(df)} live test-mode orchestrated events. All 5 candidate types are always shown, including any with zero occurrences.")
     with c2:
         st.markdown("###### Classification distribution")
         counts = df["classification_bucket"].value_counts()
         fig = go.Figure(go.Pie(labels=counts.index, values=counts.values, hole=0.55, marker_colors=["#1D9A6C", "#C23A2E", "#B0740B", "#5B6172"]))
         fig.update_layout(height=240, margin=dict(l=10, r=10, t=10, b=10))
         st.plotly_chart(fig, width='stretch')
+        st.caption(f"n = {len(df)} live test-mode orchestrated events.")
 
 
 def page_analytics() -> None:
@@ -756,10 +773,11 @@ def page_analytics() -> None:
             st.markdown("##### 3. Candidate selection distribution (demo sample)")
             source_tag("demo")
             if not queue_df.empty:
-                counts = queue_df["selected_candidate_type"].value_counts()
+                counts = data.complete_candidate_counts(queue_df["selected_candidate_type"])
                 fig = go.Figure(go.Bar(x=counts.index, y=counts.values, marker_color="#2F4CDD"))
                 fig.update_layout(height=220, margin=dict(l=10, r=10, t=10, b=10), plot_bgcolor="white", paper_bgcolor="white")
                 st.plotly_chart(fig, width='stretch')
+                st.caption(f"n = {len(queue_df)} demo-generated events. All 5 candidate types are always shown, including any with zero occurrences.")
             else:
                 empty_state("No demo data available.")
         with c2:
@@ -770,6 +788,7 @@ def page_analytics() -> None:
                 fig = go.Figure(go.Pie(labels=counts.index, values=counts.values, hole=0.55, marker_colors=["#1D9A6C", "#C23A2E", "#B0740B", "#5B6172"]))
                 fig.update_layout(height=220, margin=dict(l=10, r=10, t=10, b=10))
                 st.plotly_chart(fig, width='stretch')
+                st.caption(f"n = {len(queue_df)} demo-generated events.")
             else:
                 empty_state("No demo data available.")
 
@@ -797,16 +816,26 @@ def _communications_live_fragment() -> None:
             "Customer Segment": df["customer_segment"].fillna("—"),
             "Retry Window": df["retry_window"].fillna("—"),
             "Provider": df["provider"].fillna("—"),
-            "Status": df["status"],
+            "Status": df["status"].map(data.humanize_communication_action),
             "Detail": df["message_text"].fillna("—").map(lambda t: (t[:100] + "…") if len(t) > 100 else t),
         }
     )
-    st.caption(f"{len(table)} communication events (sent / fallback / blocked).")
+    st.caption(
+        f"{len(table)} communication events (generated / fallback-generated / blocked). "
+        "\"Generated\" means the LLM produced outreach content and the system recorded that action — this project "
+        "has no outbound WhatsApp/SMS delivery integration, so no row here represents a message actually delivered "
+        "to a customer."
+    )
     st.dataframe(table, width='stretch', height=380, hide_index=True)
 
 
 def page_communications() -> None:
-    section_header("Communications", "The three LLM jobs, downstream of every policy decision.")
+    section_header(
+        "Communications",
+        "3 required core LLM jobs run downstream of every policy decision, plus 1 optional Track-03 voice-script job "
+        "(same architectural boundary: none of the four can classify a failure, choose retry timing, modify "
+        "compliance, or override policy).",
+    )
 
     st.markdown("##### Outreach activity")
     _communications_live_fragment()
@@ -867,7 +896,7 @@ def _revenue_at_risk_overview_fragment() -> None:
     with cols[2]:
         kpi_card("No action", str(kpis["no_action_cases"]), "not eligible / capped")
     with cols[3]:
-        kpi_card("Recovered", str(kpis["demo_synthetic_recovered_cases"]), "SYNTHETIC BENCHMARK only")
+        kpi_card("Recovered", str(kpis["demo_synthetic_recovered_cases"]), "DEMO-GENERATED only — see recovery_outcomes.confirmed_by")
 
 
 @st.fragment(run_every=f"{LIVE_REFRESH_SECONDS}s")
@@ -880,9 +909,19 @@ def _revenue_recovery_queue_fragment() -> None:
         return
     event_types = sorted(df["event_type"].unique().tolist())
     selected = st.multiselect("Filter by event type", event_types, default=event_types, key="revenue_queue_filter")
+    st.caption("Selected event types: " + (", ".join(selected) if selected else "(none)"))
     filtered = df[df["event_type"].isin(selected)] if selected else df
     table = pd.DataFrame({
-        "Event": filtered["event_id"], "Type": filtered["event_type"], "Customer": filtered["customer_ref"],
+        # customer_ref is a genuine customer/subscription identifier for 4 of
+        # the 5 revenue-risk domains (checkout_abandoned/mandate_failed/
+        # receivable_overdue/promise_to_pay_broken), but for
+        # payment_failed_no_subscription it is literally
+        # raw_events.payment_id -- this system has no real customer
+        # identifier for an anonymous one-time-payment/Payment-Link failure
+        # (see recovery/webhook_pipeline.py::_build_one_time_payment_event).
+        # "Customer" alone would misdescribe that case, so this column is
+        # honestly labeled to cover both.
+        "Event": filtered["event_id"], "Type": filtered["event_type"], "Payment / Customer Reference": filtered["customer_ref"],
         "Amount": filtered["amount"].map(money), "Candidate": filtered["selected_candidate_type"],
         "Scheduled": filtered["selected_candidate_datetime"].map(data.format_ts),
         "Decided": filtered["decided_at"].map(data.format_ts),
@@ -900,9 +939,14 @@ def _revenue_timeline_fragment() -> None:
         return
     table = pd.DataFrame({
         "Time": df["timestamp"].map(data.format_ts), "Event Type": df["event_type"],
-        "Reference": df["reference"], "Amount": df["amount"].map(money),
+        "Processing Path": df["processing_path"], "Reference": df["reference"], "Amount": df["amount"].map(money),
     })
     st.dataframe(table, width='stretch', height=300, hide_index=True)
+    st.caption(
+        "The same payment reference can legitimately appear once under Subscription Recovery and once under "
+        "Revenue Risk — those are two different processing records for the same underlying payment, not a "
+        "duplicate. Processing Path makes which domain handled each row explicit."
+    )
 
 
 @st.fragment(run_every=f"{LIVE_REFRESH_SECONDS}s")
@@ -945,7 +989,7 @@ def _customer_recovery_queue_fragment() -> None:
         empty_state("No customer recovery cases yet.")
         return
     table = pd.DataFrame({
-        "Customer": df["customer_ref"], "Latest event type": df["event_type"], "Amount": df["amount"].map(money),
+        "Payment / Customer Reference": df["customer_ref"], "Latest event type": df["event_type"], "Amount": df["amount"].map(money),
         "Status": df["status"], "Received": df["received_at"].map(data.format_ts),
     })
     st.dataframe(table, width='stretch', height=300, hide_index=True)
@@ -1044,7 +1088,7 @@ def _system_status_fragment() -> None:
     with cols[2]:
         kpi_card("Webhook secret", "Configured" if status.get("webhook_secret_configured") else "Missing", "RAZORPAY_WEBHOOK_SECRET (value never shown)")
     with cols[3]:
-        kpi_card("Razorpay webhook enablement", "Unknown", "Not queryable from this backend — no Razorpay account API call is implemented")
+        kpi_card("Razorpay webhook enablement", "Not Queryable", "No Razorpay account API call is implemented — this cannot be inferred from local configuration alone")
 
     cols2 = st.columns(5, gap="small")
     with cols2[0]:
@@ -1075,7 +1119,7 @@ def page_system_demo() -> None:
 
     status = data.get_live_system_status()
 
-    st.markdown("##### Live runtime status")
+    st.markdown("##### Live test-mode runtime")
     _system_status_fragment()
 
     st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
@@ -1113,7 +1157,13 @@ def page_system_demo() -> None:
     st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
     st.markdown("##### Test suite")
     n_functions = data.count_test_functions()
-    st.markdown(f'<div class="ar-card">{n_functions} test functions defined across tests/*.py (dynamically counted; some are parametrized into more individual cases at collection time). Use the button below for a live count.</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="ar-card">{n_functions} test functions defined across tests/*.py — a static code scan '
+        f'(dynamically re-scanned, cached 60s), not a recent test run. Parametrized tests are collected into more '
+        f'individual cases at run time, so pytest\'s own collected/passed count is normally higher. Press "Run full '
+        f'test suite now" below for a live, actually-executed pass/fail count.</div>',
+        unsafe_allow_html=True,
+    )
     if st.button("Run full test suite now"):
         with st.spinner("Running pytest tests/ -q ..."):
             code, tail = data.run_full_test_suite()
@@ -1223,7 +1273,7 @@ def main() -> None:
     top_bar(
         test_mode=status.get("environment") == "test",
         live_ok=status.get("database_connected", False),
-        refresh_label=f"live · {LIVE_REFRESH_SECONDS}s refresh",
+        refresh_label=f"TEST-MODE DB · live refresh {LIVE_REFRESH_SECONDS}s",
     )
 
     sidebar_brand()

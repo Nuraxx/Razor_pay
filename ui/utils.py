@@ -49,3 +49,29 @@ def humanize_status(value: str | None) -> str:
     if not value:
         return "—"
     return str(value).replace("_", " ").title()
+
+
+# UI consistency pass (Issue 21): "sent" is this project's own internal
+# communication_action/status value meaning "the LLM successfully generated
+# outreach content and the system recorded that action" -- this project has
+# no outbound WhatsApp/SMS/email delivery integration anywhere (nothing
+# calls a real messaging provider's API), so displaying the raw word "sent"
+# risks being read as "a message was actually delivered to the customer."
+# One shared display mapping, applied wherever this value is shown to a
+# user -- never a second ad-hoc string in a page module. The underlying
+# stored value ("sent" / "fallback_used" / "blocked" / "skipped") is never
+# renamed -- ui/data.py's _derive_final_status and every other internal
+# comparison keeps comparing against the real value; only the rendered
+# label changes.
+COMMUNICATION_ACTION_DISPLAY = {
+    "sent": "Generated (recorded)",
+    "fallback_used": "Generated (fallback)",
+    "blocked": "Blocked (compliance)",
+    "skipped": "Skipped",
+}
+
+
+def humanize_communication_action(value: str | None) -> str:
+    if not value:
+        return "—"
+    return COMMUNICATION_ACTION_DISPLAY.get(value, humanize_status(value))

@@ -71,6 +71,19 @@ STATUS_STYLES: dict[str, tuple[str, str]] = {
     "MISSING": (DANGER_SOFT, DANGER),
     "UNKNOWN": (NEUTRAL_SOFT, NEUTRAL),
     "NOT ORCHESTRATED": (WARNING_SOFT, WARNING),
+    # UI consistency pass: webhook signature status (Issue 3) and derived
+    # retry-schedule status (Issue 4) -- see ui/data.py::payment_event_signature_status
+    # / _derive_retry_status for how these are computed.
+    "VERIFIED": (SUCCESS_SOFT, SUCCESS),
+    "VERIFICATION FAILED": (DANGER_SOFT, DANGER),
+    "VERIFIED (SYNTHETIC)": (INFO_SOFT, INFO),
+    "SYNTHETIC / UNSIGNED": (NEUTRAL_SOFT, NEUTRAL),
+    "SCHEDULED": (SUCCESS_SOFT, SUCCESS),
+    "OVERDUE": (WARNING_SOFT, WARNING),
+    "RECOVERED": (SUCCESS_SOFT, SUCCESS),
+    "PARTIALLY_RECOVERED": (WARNING_SOFT, WARNING),
+    "LOST": (DANGER_SOFT, DANGER),
+    "NOT QUERYABLE": (NEUTRAL_SOFT, NEUTRAL),
 }
 
 

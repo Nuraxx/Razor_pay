@@ -58,7 +58,7 @@ from model.unified_model import get_live_unified_model
 from policy.decision_engine import EVENT_FEATURE_KEYS
 from recovery.orchestrator import RecoveryEventInput, orchestrate_recovery
 from recovery.promise_service import record_customer_reply
-from ui.utils import format_inr, format_ts, humanize_status  # noqa: F401 -- re-exported: `from ui.data import format_inr, humanize_status` and `data.format_ts` stay valid
+from ui.utils import format_inr, format_ts, humanize_communication_action, humanize_status  # noqa: F401 -- re-exported: `from ui.data import format_inr, humanize_status` and `data.format_ts` / `data.humanize_communication_action` stay valid
 
 RAW_DATA_DIR = PROJECT_ROOT / "data" / "raw"
 REPORTS_DIR = PROJECT_ROOT / "evaluation" / "reports"
@@ -258,6 +258,43 @@ def _derive_final_status(row: pd.Series) -> str:
     if row["communication_action"] == "sent":
         return "COMMUNICATION_ALLOWED"
     return "RETRY_ALLOWED"
+
+
+def _derive_retry_status(selected_candidate_type: str | None, selected_candidate_datetime, now, outcome_status: str | None) -> str:
+    """UI consistency pass (Issue 4): presentation-only derivation, never a
+    new backend state. This system only ever RECORDS a scheduled-retry
+    recommendation -- recovery/orchestrator.py's payment_action=
+    "retry_scheduled" and recovery/retry_sweep.py's follow-up attempts are
+    both explicitly "recorded only (no live Razorpay call)" (see that
+    module's own docstrings and app/models.py::RecoveryOutcome's BINDING
+    RULE) -- so a past selected_candidate_datetime does NOT by itself mean
+    anything failed or succeeded; it only means the recommended moment has
+    passed with no further confirmed outcome recorded yet. A REAL confirmed
+    outcome (recovery_outcomes.recovery_status, only ever set to RECOVERED/
+    PARTIALLY_RECOVERED/LOST by a genuine payment.captured webhook via
+    recovery/payment_reconciliation.py, or by the demo generator) always
+    takes precedence over a raw time comparison when one exists.
+    NO_ACTION / no candidate scheduled at all -> "—" (nothing to be
+    scheduled/overdue about)."""
+    if not selected_candidate_type or selected_candidate_type == "NO_ACTION" or pd.isna(selected_candidate_datetime):
+        return "—"
+    if outcome_status in ("RECOVERED", "PARTIALLY_RECOVERED", "LOST"):
+        return outcome_status
+    candidate_dt = pd.to_datetime(selected_candidate_datetime)
+    if candidate_dt.tzinfo is None and getattr(now, "tzinfo", None) is not None:
+        candidate_dt = candidate_dt.tz_localize(now.tzinfo)
+    elif candidate_dt.tzinfo is not None and getattr(now, "tzinfo", None) is None:
+        candidate_dt = candidate_dt.tz_localize(None)
+    return "SCHEDULED" if candidate_dt > pd.Timestamp(now) else "OVERDUE"
+
+
+RETRY_STATUS_HELP = (
+    "SCHEDULED: recommended retry time is still in the future. OVERDUE: the recommended retry time has "
+    "passed but no execution outcome has been recorded yet -- this system only ever records a retry "
+    "recommendation (no live Razorpay retry call is made; see recovery/retry_sweep.py). RECOVERED / "
+    "PARTIALLY_RECOVERED / LOST: a real payment.captured webhook (or, for demo data, the demo generator) "
+    "has since confirmed the outcome."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -460,6 +497,8 @@ def get_live_raw_events_df(limit: int = 200) -> pd.DataFrame:
                     "error_source": r.error_source,
                     "error_step": r.error_step,
                     "signature_verified": r.signature_verified,
+                    "signature_status": payment_event_signature_status(r.signature_verified, r.razorpay_event_id),
+                    "origin": razorpay_event_origin_label(r.razorpay_event_id),
                     "raw_payload": r.raw_payload,
                 }
                 for r in rows
@@ -477,6 +516,10 @@ def get_live_recovery_queue_df(limit: int = 200) -> pd.DataFrame:
     raw_events/failure_events instead of a CSV lookup: a live
     PolicyDecision.event_id is a real failure_events.id, not a CSV row
     index the demo path repurposes as one."""
+    from datetime import datetime, timezone
+
+    from app.models import RecoveryOutcome
+
     db = get_live_session()
     try:
         rows = (
@@ -487,6 +530,15 @@ def get_live_recovery_queue_df(limit: int = 200) -> pd.DataFrame:
             .limit(limit)
             .all()
         )
+        # Latest known recovery_status per event_id (Issue 4) -- a real
+        # payment.captured confirmation (or demo-generator confirmation)
+        # always outranks a raw retry-time comparison. Bulk-fetched once,
+        # not per row.
+        outcome_status_by_event = {
+            o.event_id: o.recovery_status
+            for o in db.query(RecoveryOutcome).filter(RecoveryOutcome.event_type == "payment_failed").order_by(RecoveryOutcome.id).all()
+        }
+        now = datetime.now(timezone.utc)
         records = []
         for policy_row, raw_row in rows:
             comm = (
@@ -528,6 +580,10 @@ def get_live_recovery_queue_df(limit: int = 200) -> pd.DataFrame:
             }
             record["final_status"] = _derive_final_status(pd.Series(record))
             record["payment_action"] = "no_action" if policy_row.selected_candidate_type == "NO_ACTION" else "retry_scheduled"
+            record["retry_status"] = _derive_retry_status(
+                policy_row.selected_candidate_type, policy_row.selected_candidate_datetime, now,
+                outcome_status_by_event.get(policy_row.event_id),
+            )
             records.append(record)
         return pd.DataFrame.from_records(records)
     finally:
@@ -701,6 +757,39 @@ def _looks_like_real_razorpay_id(value: str | None) -> bool:
     return bool(value) and bool(_RAZORPAY_ID_RE.match(value))
 
 
+def razorpay_event_origin_label(razorpay_event_id: str | None) -> str:
+    """UI consistency pass: one shared vocabulary for whether a raw_events
+    row plausibly came from a genuine Razorpay Test Mode webhook delivery vs.
+    a locally-triggered synthetic/verification-script payload -- reuses
+    _looks_like_real_razorpay_id's own conservative heuristic (never labels
+    something synthetic as real). Both labels say "TEST" -- this project
+    only ever runs against Razorpay TEST MODE, never production, regardless
+    of which of the two this returns."""
+    return "RAZORPAY TEST WEBHOOK" if _looks_like_real_razorpay_id(razorpay_event_id) else "SYNTHETIC TEST EVENT"
+
+
+def payment_event_signature_status(signature_verified: bool | None, razorpay_event_id: str | None) -> str:
+    """UI consistency pass: a bare 'No' for signature_verified=False can
+    misread as "the backend accepted an unsigned real webhook" -- it never
+    does (app/main.py::razorpay_webhook rejects any request that fails
+    is_valid_signature() BEFORE a raw_events row is ever created -- that
+    handler is the one and only insertion path for this table). A row with a
+    synthetic-looking ID can still have signature_verified=True (a
+    verification/test script signed a fabricated payload with the real
+    configured webhook secret and sent it through the real endpoint -- the
+    HMAC check genuinely passed, only the CONTENT is synthetic); a
+    signature_verified=False row can only be a historical artifact predating
+    this codebase's current signature-gated-insert hardening (today's code
+    cannot produce a new one). Never softens a real-format-ID + failed-
+    signature row into an ambiguous "N/A" -- that combination must stay
+    visibly a verification failure, per the never-alter-webhook-security
+    boundary this function only ever reads, never enforces."""
+    is_real = _looks_like_real_razorpay_id(razorpay_event_id)
+    if signature_verified:
+        return "VERIFIED" if is_real else "VERIFIED (SYNTHETIC)"
+    return "VERIFICATION FAILED" if is_real else "SYNTHETIC / UNSIGNED"
+
+
 def get_live_llm_summary() -> dict:
     """Overview's "LLM CALLS" KPI card -- total llm_invocations count plus
     the single most recent invocation's provider/model/task/success, read
@@ -771,6 +860,7 @@ def get_live_pipeline_snapshot() -> dict | None:
         "event_id": event_id,
         "razorpay_event_id": raw_row.razorpay_event_id if raw_row else None,
         "is_live_razorpay_id": _looks_like_real_razorpay_id(raw_row.razorpay_event_id if raw_row else None),
+        "origin_label": razorpay_event_origin_label(raw_row.razorpay_event_id if raw_row else None),
         "payment_id": raw_row.payment_id if raw_row else None,
         "received_at": raw_row.received_at if raw_row else None,
         "error_reason": None if pd.isna(latest["error_reason"]) else latest["error_reason"],
@@ -1006,8 +1096,24 @@ def get_live_revenue_at_risk_kpis() -> dict:
 
 
 def get_live_recovery_timeline_df(limit: int = 200) -> pd.DataFrame:
-    """Chronological feed across BOTH payment_failed (raw_events) and the 4
-    new domains (revenue_risk_events) -- one unified "Recovery Timeline"."""
+    """Chronological feed across BOTH raw_events (subscription-linked and
+    one-time-payment payment.failed/payment.captured deliveries) and the 4
+    Track-03 revenue_risk_events domains -- one unified "Recovery Timeline".
+
+    `event_type` now reports the REAL stored event_type for a raw_events row
+    (e.g. "payment.failed" / "payment.captured") rather than a hardcoded
+    "payment_failed" literal -- an earlier version of this function always
+    displayed "payment_failed" regardless of what actually happened, which
+    silently mislabeled payment.captured rows too. `processing_path` (Issue
+    9, UI consistency pass) makes the two DIFFERENT recovery domains visibly
+    distinct even when they share the same payment reference: a raw_events
+    row (this project's universal webhook intake table) is always
+    "Subscription Recovery"; a revenue_risk_events row -- INCLUDING
+    event_type="payment_failed_no_subscription", the one-time-payment/
+    Payment-Link path recovery/webhook_pipeline.py routes there instead of
+    to failure_events -- is always "Revenue Risk". The same payment_id can
+    legitimately appear once in each: that is the SAME underlying payment
+    being tracked by two different processing records, not a duplicate."""
     from app.models import RevenueRiskEvent
 
     db = get_live_session()
@@ -1015,10 +1121,16 @@ def get_live_recovery_timeline_df(limit: int = 200) -> pd.DataFrame:
         payment_rows = db.query(RawEvent).order_by(RawEvent.id.desc()).limit(limit).all()
         revenue_rows = db.query(RevenueRiskEvent).order_by(RevenueRiskEvent.id.desc()).limit(limit).all()
         records = [
-            {"timestamp": r.received_at, "event_type": "payment_failed", "reference": r.payment_id or r.razorpay_event_id, "amount": (r.amount / 100.0) if r.amount else None}
+            {
+                "timestamp": r.received_at, "event_type": r.event_type, "processing_path": "Subscription Recovery",
+                "reference": r.payment_id or r.razorpay_event_id, "amount": (r.amount / 100.0) if r.amount else None,
+            }
             for r in payment_rows
         ] + [
-            {"timestamp": r.received_at, "event_type": r.event_type, "reference": r.external_id, "amount": r.amount}
+            {
+                "timestamp": r.received_at, "event_type": r.event_type, "processing_path": "Revenue Risk",
+                "reference": r.external_id, "amount": r.amount,
+            }
             for r in revenue_rows
         ]
         df = pd.DataFrame.from_records(records)
@@ -1226,6 +1338,28 @@ def count_test_functions() -> int:
             continue
         count += len(pattern.findall(text))
     return count
+
+
+# ---------------------------------------------------------------------------
+# Complete candidate space (Issue 5, UI consistency pass): the recovery
+# engine always considers exactly these 5 candidate types
+# (policy/retry_candidates.py::CANDIDATE_TYPES, reused here rather than a
+# second hardcoded list) regardless of how many actually occur in a small
+# live/demo sample. A chart built from a bare .value_counts() on a small
+# sample silently drops any candidate type that happened not to occur,
+# which can misleadingly look like the engine only supports the ones shown.
+# ---------------------------------------------------------------------------
+
+def complete_candidate_counts(selected_candidate_types) -> pd.Series:
+    """Reindexes a Series/iterable of selected_candidate_type values onto
+    the full, stable CANDIDATE_TYPES order, filling any missing category
+    with an explicit 0 -- never inventing a count, never dropping a
+    category. NO_ACTION selections are excluded (that's a "no candidate
+    chosen" outcome, not one of the 5 retry candidates themselves)."""
+    from policy.retry_candidates import CANDIDATE_TYPES
+
+    counts = pd.Series(selected_candidate_types).value_counts()
+    return counts.reindex(CANDIDATE_TYPES, fill_value=0)
 
 
 # ---------------------------------------------------------------------------
